@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDocx, parseXlsx, parsePdf, parseFile } from "../convex/parsers";
+import { parseDocx, parseXlsx, parsePdf, parseFile } from "../src/lib/parsers";
 import { readFileSync } from "fs";
 import { join } from "path";
 

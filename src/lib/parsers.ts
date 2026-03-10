@@ -1,6 +1,5 @@
 import mammoth from "mammoth";
 import ExcelJS from "exceljs";
-import pdfParse from "pdf-parse";
 
 export async function parseDocx(buffer: Buffer): Promise<string> {
   const result = await mammoth.extractRawText({ buffer });
@@ -9,7 +8,7 @@ export async function parseDocx(buffer: Buffer): Promise<string> {
 
 export async function parseXlsx(buffer: Buffer): Promise<string> {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer);
+  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
 
   const sheets: string[] = [];
   workbook.eachSheet((sheet) => {
@@ -35,6 +34,8 @@ export async function parseXlsx(buffer: Buffer): Promise<string> {
 }
 
 export async function parsePdf(buffer: Buffer): Promise<string> {
+  // Dynamic import to avoid pdf-parse loading test files at module init
+  const pdfParse = (await import("pdf-parse")).default;
   const result = await pdfParse(buffer);
   return result.text;
 }

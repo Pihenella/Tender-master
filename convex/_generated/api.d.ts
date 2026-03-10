@@ -8,7 +8,13 @@
  * @module
  */
 
+import type * as analysis from "../analysis.js";
+import type * as analysisHelpers from "../analysisHelpers.js";
+import type * as calculationTemplate from "../calculationTemplate.js";
+import type * as calculationUpload from "../calculationUpload.js";
 import type * as files from "../files.js";
+import type * as generation from "../generation.js";
+import type * as logistics from "../logistics.js";
 import type * as procurements from "../procurements.js";
 
 import type {
@@ -18,7 +24,13 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  analysis: typeof analysis;
+  analysisHelpers: typeof analysisHelpers;
+  calculationTemplate: typeof calculationTemplate;
+  calculationUpload: typeof calculationUpload;
   files: typeof files;
+  generation: typeof generation;
+  logistics: typeof logistics;
   procurements: typeof procurements;
 }>;
 

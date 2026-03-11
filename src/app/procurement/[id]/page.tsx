@@ -8,6 +8,7 @@ import { FileDropzone } from "@/components/file-dropzone";
 import { ExtractedItemsTable } from "@/components/extracted-items-table";
 import { GeneratedFilesList } from "@/components/generated-files-list";
 import { StatusBadge } from "@/components/status-badge";
+import { ProgressBar } from "@/components/progress-bar";
 import Link from "next/link";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
@@ -51,14 +52,8 @@ export default function ProcurementPage({
   }, [analyzeDocuments, procurementId]);
 
   const handleGenerateTemplate = useCallback(async () => {
-    const storageId = await generateTemplate({ procurementId });
-    if (storageId) {
-      // Download the file
-      const url = await fetch(
-        `/api/storage/${storageId}`
-      ).catch(() => null);
-      // The file will appear in generated files list
-    }
+    await generateTemplate({ procurementId });
+    // File appears in generated files list automatically via Convex reactivity
   }, [generateTemplate, procurementId]);
 
   const handleCalculationUpload = useCallback(
@@ -139,14 +134,23 @@ export default function ProcurementPage({
           <StatusBadge status={procurement.status} />
         </div>
 
-        {procurement.statusMessage && (
-          <div
-            className={`mb-4 p-3 rounded text-sm ${
-              procurement.status === "error"
-                ? "bg-red-50 text-red-700"
-                : "bg-blue-50 text-blue-700"
-            }`}
-          >
+        {procurement.status === "error" && procurement.statusMessage && (
+          <div className="mb-4 p-3 rounded text-sm bg-red-50 text-red-700">
+            {procurement.statusMessage}
+          </div>
+        )}
+
+        {(isAnalyzing || isGenerating) && (
+          <div className="mb-4 p-4 bg-blue-50 rounded-lg">
+            <ProgressBar
+              progress={procurement.progress ?? 0}
+              message={procurement.statusMessage}
+            />
+          </div>
+        )}
+
+        {!isAnalyzing && !isGenerating && procurement.status !== "error" && procurement.statusMessage && (
+          <div className="mb-4 p-3 rounded text-sm bg-blue-50 text-blue-700">
             {procurement.statusMessage}
           </div>
         )}
@@ -197,6 +201,19 @@ export default function ProcurementPage({
               >
                 Скачать калькуляцию
               </button>
+
+              {generatedFiles && generatedFiles.filter(f => f.formType === "calculation").map(f => (
+                f.url && (
+                  <a
+                    key={f._id}
+                    href={f.url}
+                    download={f.fileName}
+                    className="mt-2 inline-block text-sm text-blue-600 hover:text-blue-700"
+                  >
+                    📥 {f.fileName}
+                  </a>
+                )
+              ))}
             </div>
           )}
         </div>

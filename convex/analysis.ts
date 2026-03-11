@@ -3,7 +3,6 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { internal, api } from "./_generated/api";
-import Anthropic from "@anthropic-ai/sdk";
 import { parseFile } from "../src/lib/parsers";
 
 const EXTRACTION_PROMPT = `You are analyzing Russian procurement (закупка) documentation files.
@@ -37,16 +36,61 @@ IMPORTANT:
 - All prices in rubles, no formatting
 - Return ONLY valid JSON, no markdown or comments`;
 
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+
+async function callGemini(apiKey: string, prompt: string, maxRetries = 3): Promise<string> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          maxOutputTokens: 65536,
+          temperature: 0.1,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      }),
+    });
+
+    if (res.status === 429) {
+      const waitMs = 60000 * (attempt + 1);
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Gemini API ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts
+      ?.map((p: any) => p.text)
+      .join("") || "";
+
+    if (!text) throw new Error("Empty response from Gemini");
+    return text;
+  }
+  throw new Error("Gemini API: max retries exceeded");
+}
+
 export const analyzeDocuments = action({
   args: { procurementId: v.id("procurements") },
   handler: async (ctx, args) => {
-    await ctx.runMutation(api.procurements.updateStatus, {
-      id: args.procurementId,
-      status: "analyzing",
-      statusMessage: "Парсинг файлов...",
-    });
+    const updateProgress = async (msg: string, progress: number) => {
+      await ctx.runMutation(api.procurements.updateStatus, {
+        id: args.procurementId,
+        status: "analyzing",
+        statusMessage: msg,
+        progress,
+      });
+    };
 
     try {
+      // Step 1: Load files (0-20%)
+      await updateProgress("Загрузка файлов...", 0);
+
       const files = await ctx.runQuery(api.files.listByProcurement, {
         procurementId: args.procurementId,
       });
@@ -57,8 +101,13 @@ export const analyzeDocuments = action({
 
       const parsedFiles: Array<{ name: string; content: string }> = [];
 
-      for (const file of files) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
         if (!file.url) continue;
+        await updateProgress(
+          `Парсинг файла ${i + 1}/${files.length}: ${file.fileName}`,
+          Math.round((i / files.length) * 20)
+        );
         const response = await fetch(file.url);
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
@@ -66,48 +115,64 @@ export const analyzeDocuments = action({
         parsedFiles.push({ name: file.fileName, content });
       }
 
-      await ctx.runMutation(api.procurements.updateStatus, {
-        id: args.procurementId,
-        status: "analyzing",
-        statusMessage: "Анализ ИИ...",
+      // Step 2: AI Analysis (20-80%)
+      await updateProgress(`Отправка ${parsedFiles.length} файлов в ИИ...`, 20);
+
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY is not set");
+      }
+
+      // Limit total size to ~500K chars (~125K tokens) to avoid Gemini timeouts
+      const MAX_CHARS = 500000;
+      const priorityKeywords = ["ТЗ", "техническ", "извещение", "документация", "НМЦ", "расчет", "приложение"];
+      const sortedFiles = [...parsedFiles].sort((a, b) => {
+        const aP = priorityKeywords.some(k => a.name.toLowerCase().includes(k.toLowerCase())) ? 0 : 1;
+        const bP = priorityKeywords.some(k => b.name.toLowerCase().includes(k.toLowerCase())) ? 0 : 1;
+        return aP - bP;
       });
 
-      const anthropic = new Anthropic({
-        apiKey: process.env.ANTHROPIC_API_KEY,
-      });
+      let totalChars = 0;
+      const includedFiles: typeof parsedFiles = [];
+      for (const f of sortedFiles) {
+        if (totalChars + f.content.length > MAX_CHARS && includedFiles.length > 0) {
+          // Truncate last file if it partially fits
+          const remaining = MAX_CHARS - totalChars;
+          if (remaining > 10000) {
+            includedFiles.push({ name: f.name, content: f.content.slice(0, remaining) + "\n...[ОБРЕЗАНО]" });
+          }
+          break;
+        }
+        includedFiles.push(f);
+        totalChars += f.content.length;
+      }
 
-      const fileContents = parsedFiles
+      const fileContents = includedFiles
         .map((f) => `=== FILE: ${f.name} ===\n${f.content}`)
         .join("\n\n---\n\n");
 
-      let retries = 0;
-      let extractedData: any = null;
+      const fullPrompt = `${EXTRACTION_PROMPT}\n\nДокументы:\n\n${fileContents}`;
 
-      while (retries < 3 && !extractedData) {
-        try {
-          const response = await anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 8000,
-            messages: [
-              {
-                role: "user",
-                content: `${EXTRACTION_PROMPT}\n\nДокументы:\n\n${fileContents}`,
-              },
-            ],
-          });
+      await updateProgress("ИИ анализирует документы...", 30);
 
-          const text = response.content
-            .filter((b): b is Anthropic.TextBlock => b.type === "text")
-            .map((b) => b.text)
-            .join("");
+      const result = await callGemini(apiKey, fullPrompt);
 
-          extractedData = JSON.parse(text);
-        } catch (e) {
-          retries++;
-          if (retries >= 3)
-            throw new Error(`AI extraction failed after 3 retries: ${e}`);
+      await updateProgress("Обработка ответа ИИ...", 70);
+
+      let extractedData: any;
+      try {
+        extractedData = JSON.parse(result);
+      } catch {
+        const jsonMatch = result.match(/```json\s*([\s\S]*?)\s*```/) || result.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          extractedData = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+        } else {
+          throw new Error("Failed to parse AI response as JSON");
         }
       }
+
+      // Step 3: Save results (80-100%)
+      await updateProgress("Сохранение метаданных закупки...", 80);
 
       await ctx.runMutation(api.procurements.updateFromAnalysis, {
         id: args.procurementId,
@@ -129,7 +194,15 @@ export const analyzeDocuments = action({
       }
 
       // Save new items
-      for (const item of extractedData.items || []) {
+      const items = extractedData.items || [];
+      for (let i = 0; i < items.length; i++) {
+        if (i % 20 === 0) {
+          await updateProgress(
+            `Сохранение позиций: ${i}/${items.length}`,
+            80 + Math.round((i / items.length) * 18)
+          );
+        }
+        const item = items[i];
         await ctx.runMutation(internal.analysisHelpers.saveExtractedItem, {
           procurementId: args.procurementId,
           name: String(item.name || ""),
@@ -151,21 +224,18 @@ export const analyzeDocuments = action({
         });
       }
 
-      // Calculate logistics
-      await ctx.runAction(api.logistics.calculateDelivery, {
-        procurementId: args.procurementId,
-      });
-
       await ctx.runMutation(api.procurements.updateStatus, {
         id: args.procurementId,
         status: "analyzed",
-        statusMessage: `Извлечено ${(extractedData.items || []).length} позиций`,
+        statusMessage: `Извлечено ${items.length} позиций`,
+        progress: 100,
       });
     } catch (error: any) {
       await ctx.runMutation(api.procurements.updateStatus, {
         id: args.procurementId,
         status: "error",
         statusMessage: `Ошибка анализа: ${error.message}`,
+        progress: 0,
       });
     }
   },

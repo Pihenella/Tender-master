@@ -47,11 +47,13 @@ export const updateStatus = mutation({
       v.literal("error")
     ),
     statusMessage: v.optional(v.string()),
+    progress: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.id, {
       status: args.status,
       statusMessage: args.statusMessage,
+      progress: args.progress,
     });
   },
 });

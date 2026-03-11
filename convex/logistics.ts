@@ -3,36 +3,44 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { api, internal } from "./_generated/api";
-import Anthropic from "@anthropic-ai/sdk";
+
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 async function estimateDeliveryWithAI(
   destination: string,
   items: Array<{ name: string; weight: number; quantity: number }>
 ): Promise<number> {
-  const anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-  });
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
 
   const totalWeight = items.reduce((sum, i) => sum + i.weight * i.quantity, 0);
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 200,
-    messages: [
-      {
-        role: "user",
-        content: `Оцени примерную стоимость доставки груза транспортной компанией ПЭК.
+  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{
+        parts: [{
+          text: `Оцени примерную стоимость доставки груза транспортной компанией ПЭК.
 Откуда: Екатеринбург
 Куда: ${destination}
 Общий вес: ${totalWeight} кг
 Товары: ${items.map((i) => `${i.name} (${i.quantity} шт, ~${i.weight} кг/шт)`).join(", ")}
 
 Ответь ТОЛЬКО числом в рублях, без пояснений. Например: 5500`,
-      },
-    ],
+        }],
+      }],
+      generationConfig: { maxOutputTokens: 100, temperature: 0.1, thinkingConfig: { thinkingBudget: 0 } },
+    }),
   });
 
-  const text = (response.content[0] as Anthropic.TextBlock).text.trim();
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini API ${res.status}: ${errText}`);
+  }
+
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
   const cost = parseInt(text.replace(/\D/g, ""), 10);
   return isNaN(cost) ? 3000 : cost;
 }

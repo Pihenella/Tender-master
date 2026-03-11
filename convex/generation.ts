@@ -322,13 +322,18 @@ async function generatePriceProposal(
 export const generateForms = action({
   args: { procurementId: v.id("procurements") },
   handler: async (ctx, args) => {
-    await ctx.runMutation(api.procurements.updateStatus, {
-      id: args.procurementId,
-      status: "generating",
-      statusMessage: "Генерация форм...",
-    });
+    const updateProgress = async (msg: string, progress: number) => {
+      await ctx.runMutation(api.procurements.updateStatus, {
+        id: args.procurementId,
+        status: "generating",
+        statusMessage: msg,
+        progress,
+      });
+    };
 
     try {
+      await updateProgress("Подготовка данных...", 0);
+
       const procurement = await ctx.runQuery(api.procurements.get, {
         id: args.procurementId,
       });
@@ -349,7 +354,8 @@ export const generateForms = action({
         procurementId: args.procurementId,
       });
 
-      // Form 3
+      // Form 3 (0-25%)
+      await updateProgress("Генерация Формы 3 (Анкета)...", 10);
       const form3Buffer = await generateForm3Docx(profile);
       const form3StorageId = await ctx.storage.store(
         new Blob([new Uint8Array(form3Buffer)], {
@@ -364,7 +370,8 @@ export const generateForms = action({
         formType: "form3",
       });
 
-      // Form 6
+      // Form 6 (25-50%)
+      await updateProgress("Генерация Формы 6 (Цепочка собственников)...", 30);
       const form6Buffer = await generateForm6Docx(profile);
       const form6StorageId = await ctx.storage.store(
         new Blob([new Uint8Array(form6Buffer)], {
@@ -379,7 +386,8 @@ export const generateForms = action({
         formType: "form6",
       });
 
-      // Tech proposal
+      // Tech proposal (50-75%)
+      await updateProgress("Генерация Тех. предложения...", 55);
       const techBuffer = await generateTechProposal(items, calcData);
       const techStorageId = await ctx.storage.store(
         new Blob([new Uint8Array(techBuffer)], {
@@ -394,7 +402,8 @@ export const generateForms = action({
         formType: "techProposal",
       });
 
-      // Price proposal
+      // Price proposal (75-100%)
+      await updateProgress("Генерация Цен. предложения...", 80);
       const priceBuffer = await generatePriceProposal(items, calcData);
       const priceStorageId = await ctx.storage.store(
         new Blob([new Uint8Array(priceBuffer)], {
@@ -413,12 +422,14 @@ export const generateForms = action({
         id: args.procurementId,
         status: "completed",
         statusMessage: "Формы сгенерированы",
+        progress: 100,
       });
     } catch (error: any) {
       await ctx.runMutation(api.procurements.updateStatus, {
         id: args.procurementId,
         status: "error",
         statusMessage: `Ошибка генерации: ${error.message}`,
+        progress: 0,
       });
     }
   },

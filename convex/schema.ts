@@ -25,6 +25,7 @@ export default defineSchema({
       v.literal("error")
     ),
     statusMessage: v.optional(v.string()),
+    progress: v.optional(v.number()),
     profileId: v.union(v.literal("boltinov"), v.literal("pikhenek")),
   }),
 

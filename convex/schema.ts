@@ -72,6 +72,7 @@ export default defineSchema({
     storageId: v.id("_storage"),
     fileName: v.string(),
     formType: v.union(
+      v.literal("form2"),
       v.literal("form3"),
       v.literal("form6"),
       v.literal("techProposal"),
@@ -79,4 +80,10 @@ export default defineSchema({
       v.literal("calculation")
     ),
   }).index("by_procurement", ["procurementId"]),
+
+  formTemplates: defineTable({
+    name: v.string(),
+    storageId: v.id("_storage"),
+    fileName: v.string(),
+  }).index("by_name", ["name"]),
 });

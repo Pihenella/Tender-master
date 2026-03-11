@@ -96,6 +96,7 @@ export const saveGeneratedFile = mutation({
     storageId: v.id("_storage"),
     fileName: v.string(),
     formType: v.union(
+      v.literal("form2"),
       v.literal("form3"),
       v.literal("form6"),
       v.literal("techProposal"),
@@ -105,5 +106,34 @@ export const saveGeneratedFile = mutation({
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("generatedFiles", args);
+  },
+});
+
+export const getFormTemplate = query({
+  args: { name: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("formTemplates")
+      .withIndex("by_name", (q) => q.eq("name", args.name))
+      .first();
+  },
+});
+
+export const saveFormTemplate = mutation({
+  args: {
+    name: v.string(),
+    storageId: v.id("_storage"),
+    fileName: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("formTemplates")
+      .withIndex("by_name", (q) => q.eq("name", args.name))
+      .first();
+    if (existing) {
+      await ctx.storage.delete(existing.storageId);
+      await ctx.db.delete(existing._id);
+    }
+    return await ctx.db.insert("formTemplates", args);
   },
 });

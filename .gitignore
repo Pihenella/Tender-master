@@ -40,3 +40,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 test/
+
+# local processor
+scripts/local-processor/profiles.json
+scripts/local-processor/node_modules

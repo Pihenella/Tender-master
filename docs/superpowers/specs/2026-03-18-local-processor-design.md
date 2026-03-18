@@ -227,18 +227,49 @@ export class ConvexClient {
 
 ### 9. NotebookLM MCP Setup
 
-Prerequisites:
-- `claude mcp add notebooklm npx notebooklm-mcp@latest`
-- One-time browser auth: "Log me in to NotebookLM"
+#### Prerequisites
 - Google AI Pro subscription ($19.99/month) for extended limits
+- `claude mcp add notebooklm npx notebooklm-mcp@latest`
+
+#### Initial Google Authentication (one-time, before first use)
+
+NotebookLM uses browser cookies for auth (no official API). The `notebooklm-mcp` server extracts cookies via Chrome DevTools Protocol. This must be done **before** starting the daemon.
+
+```bash
+# Step 1: Install the MCP server
+claude mcp add notebooklm npx notebooklm-mcp@latest
+
+# Step 2: Run interactive auth setup — opens Chrome, user logs into Google
+npx notebooklm-mcp@latest setup-auth
+
+# Step 3: Verify auth works
+claude -p "List my NotebookLM notebooks"
+```
+
+Auth data is stored in `~/.notebooklm-mcp-cli/` (cookies, CSRF token, session ID). Cookies are generally stable for weeks. The CSRF token and session ID auto-refresh on each MCP client initialization.
+
+**Recommendations:**
+- Use a **dedicated Google account** for automation (not personal)
+- Re-run `setup-auth` if the daemon starts logging auth errors
+- The `install-service.sh` script checks for valid auth before enabling systemd service
+
+#### Auth Monitoring in Daemon
+
+The daemon checks NotebookLM connectivity on startup and every 10 polling cycles (every ~5 minutes):
+- On auth failure: logs error, writes timestamp to `~/.local/share/tender-master/auth-error`, skips NotebookLM-dependent tasks
+- On recovery: clears the error file, resumes normal operation
+- The UI can optionally read this status via a Convex field (`localProcessorAuthOk: boolean`) updated by the daemon
+
+#### Systemd and TTY Considerations
+
+`claude -p` with MCP works without TTY for normal operations. However, if cookies expire and `notebooklm-mcp` needs re-authentication, it requires a browser window. The daemon **cannot** re-auth automatically — it must alert the user.
+
+**Verify before deploying as service:**
+```bash
+systemd-run --user --pty claude -p "List my NotebookLM notebooks"
+```
 
 The MCP server runs automatically when Claude Code starts. `claude -p` inherits MCP config from `~/.claude/mcp.json`.
-
-**Important**: Before deploying as systemd service, verify that `claude -p` with MCP works without TTY:
-```bash
-systemd-run --user --pty claude -p "test notebooklm connection"
-```
-If MCP requires TTY for auth renewal, the daemon must detect auth failures and alert the user (e.g., write to a status file or send a desktop notification).
 
 ### 10. UI Changes
 

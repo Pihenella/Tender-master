@@ -29,19 +29,20 @@ export default function ProcurementPage({
   const extractedItems = useQuery(api.files.getExtractedItems, {
     procurementId,
   });
+  const extractedForms = useQuery(api.files.getExtractedForms, {
+    procurementId,
+  });
   const generatedFiles = useQuery(api.files.getGeneratedFiles, {
     procurementId,
   });
 
   const analyzeDocuments = useAction(api.analysis.analyzeDocuments);
-  const generateTemplate = useAction(api.calculationTemplate.generateTemplate);
   const parseCalculation = useAction(api.calculationUpload.parseCalculation);
-  const generateForms = useAction(api.generation.generateForms);
+  const fillForms = useAction(api.formFilling.fillForms);
+  const cancelOperation = useMutation(api.procurements.cancelOperation);
 
   const [profileId, setProfileId] = useState<ProfileId>("pikhenek");
   const [analyzing, setAnalyzing] = useState(false);
-  const [generating, setGenerating] = useState(false);
-
   const handleAnalyze = useCallback(async () => {
     setAnalyzing(true);
     try {
@@ -51,11 +52,6 @@ export default function ProcurementPage({
     }
   }, [analyzeDocuments, procurementId]);
 
-  const handleGenerateTemplate = useCallback(async () => {
-    await generateTemplate({ procurementId });
-    // File appears in generated files list automatically via Convex reactivity
-  }, [generateTemplate, procurementId]);
-
   const handleCalculationUpload = useCallback(
     async (storageId: Id<"_storage">) => {
       await parseCalculation({ procurementId, storageId });
@@ -63,14 +59,13 @@ export default function ProcurementPage({
     [parseCalculation, procurementId]
   );
 
-  const handleGenerateForms = useCallback(async () => {
-    setGenerating(true);
-    try {
-      await generateForms({ procurementId });
-    } finally {
-      setGenerating(false);
-    }
-  }, [generateForms, procurementId]);
+  const handleFillForms = useCallback(async () => {
+    await fillForms({ procurementId });
+  }, [fillForms, procurementId]);
+
+  const handleCancel = useCallback(async () => {
+    await cancelOperation({ id: procurementId });
+  }, [cancelOperation, procurementId]);
 
   if (procurement === undefined)
     return (
@@ -88,24 +83,30 @@ export default function ProcurementPage({
       </div>
     );
 
-  const isAnalyzing =
-    procurement.status === "analyzing" || analyzing;
+  const isAnalyzing = procurement.status === "analyzing" || analyzing;
   const isAnalyzed = [
     "analyzed",
-    "reviewed",
-    "template_downloaded",
     "calculation_uploaded",
-    "generating",
+    "filling_forms",
     "completed",
   ].includes(procurement.status);
-  const isGenerating =
-    procurement.status === "generating" || generating;
+  const isFilling = procurement.status === "filling_forms";
   const isCompleted = procurement.status === "completed";
   const hasCalculation = [
     "calculation_uploaded",
-    "generating",
+    "filling_forms",
     "completed",
   ].includes(procurement.status);
+
+  const calculationFile = generatedFiles?.find(
+    (f) => f.formType === "calculation"
+  );
+  const confidenceReport = generatedFiles?.find(
+    (f) => f.formType === "confidenceReport"
+  );
+  const filledForms = generatedFiles?.filter(
+    (f) => f.formType !== "calculation" && f.formType !== "confidenceReport"
+  );
 
   return (
     <div className="min-h-screen">
@@ -116,7 +117,7 @@ export default function ProcurementPage({
             href="/"
             className="text-sm text-blue-600 hover:text-blue-700"
           >
-            ← Назад
+            &larr; Назад
           </Link>
         </div>
 
@@ -127,37 +128,54 @@ export default function ProcurementPage({
             </h2>
             {procurement.number && (
               <p className="text-sm text-muted-foreground">
-                № {procurement.number}
+                &numero; {procurement.number}
               </p>
             )}
           </div>
           <StatusBadge status={procurement.status} />
         </div>
 
-        {procurement.status === "error" && procurement.statusMessage && (
+        {procurement.statusMessage && procurement.statusMessage.startsWith("Ошибка") && (
           <div className="mb-4 p-3 rounded text-sm bg-red-50 text-red-700">
             {procurement.statusMessage}
           </div>
         )}
 
-        {(isAnalyzing || isGenerating) && (
+        {procurement.statusMessage && procurement.statusMessage.includes("отменен") && (
+          <div className="mb-4 p-3 rounded text-sm bg-yellow-50 text-yellow-700">
+            {procurement.statusMessage}
+          </div>
+        )}
+
+        {(isAnalyzing || isFilling) && (
           <div className="mb-4 p-4 bg-blue-50 rounded-lg">
             <ProgressBar
               progress={procurement.progress ?? 0}
               message={procurement.statusMessage}
             />
+            <button
+              onClick={handleCancel}
+              className="mt-3 bg-red-500 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-red-600"
+            >
+              Остановить
+            </button>
           </div>
         )}
 
-        {!isAnalyzing && !isGenerating && procurement.status !== "error" && procurement.statusMessage && (
-          <div className="mb-4 p-3 rounded text-sm bg-blue-50 text-blue-700">
-            {procurement.statusMessage}
-          </div>
-        )}
+        {!isAnalyzing &&
+          !isFilling &&
+          procurement.status !== "error" &&
+          procurement.statusMessage && (
+            <div className="mb-4 p-3 rounded text-sm bg-blue-50 text-blue-700">
+              {procurement.statusMessage}
+            </div>
+          )}
 
-        {/* Stage 1: Analysis */}
+        {/* Stage 1: Upload & Analysis */}
         <div className="bg-white rounded-lg border p-6 mb-6">
-          <h3 className="font-semibold mb-4">Этап 1: Анализ документации</h3>
+          <h3 className="font-semibold mb-4">
+            Этап 1: Загрузка и анализ документации
+          </h3>
 
           <FileDropzone
             procurementId={procurementId}
@@ -172,19 +190,19 @@ export default function ProcurementPage({
               </p>
               <ul className="text-xs text-muted-foreground space-y-1">
                 {uploadedFiles.map((f) => (
-                  <li key={f._id}>📄 {f.fileName}</li>
+                  <li key={f._id}>&#128196; {f.fileName}</li>
                 ))}
               </ul>
             </div>
           )}
 
-          {uploadedFiles && uploadedFiles.length > 0 && !isAnalyzed && (
+          {uploadedFiles && uploadedFiles.length > 0 && (
             <button
               onClick={handleAnalyze}
               disabled={isAnalyzing}
               className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
             >
-              {isAnalyzing ? "Анализ..." : "Анализировать"}
+              {isAnalyzing ? "Анализ..." : isAnalyzed ? "Переанализировать" : "Анализировать"}
             </button>
           )}
 
@@ -194,69 +212,163 @@ export default function ProcurementPage({
                 Извлечённые позиции ({extractedItems.length}):
               </h4>
               <ExtractedItemsTable items={extractedItems} />
+            </div>
+          )}
 
-              <button
-                onClick={handleGenerateTemplate}
-                className="mt-4 bg-green-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-green-700"
-              >
-                Скачать калькуляцию
-              </button>
-
-              {generatedFiles && generatedFiles.filter(f => f.formType === "calculation").map(f => (
-                f.url && (
-                  <a
-                    key={f._id}
-                    href={f.url}
-                    download={f.fileName}
-                    className="mt-2 inline-block text-sm text-blue-600 hover:text-blue-700"
-                  >
-                    📥 {f.fileName}
-                  </a>
-                )
-              ))}
+          {isAnalyzed && extractedForms && extractedForms.length > 0 && (
+            <div className="mt-4 p-3 bg-gray-50 rounded">
+              <h4 className="text-sm font-medium mb-2">
+                Найденные формы ({extractedForms.length}):
+              </h4>
+              <ul className="text-xs text-muted-foreground space-y-1">
+                {extractedForms.map((f) => (
+                  <li key={f._id}>
+                    &#128203; {f.name}
+                    <span className="ml-2 text-gray-400">
+                      ({f.sourceFile}, {f.locationType})
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>
 
-        {/* Stage 2: Generation */}
+        {/* Stage 2: Calculation */}
         {isAnalyzed && (
-          <div className="bg-white rounded-lg border p-6">
-            <h3 className="font-semibold mb-4">Этап 2: Генерация форм</h3>
+          <div className="bg-white rounded-lg border p-6 mb-6">
+            <h3 className="font-semibold mb-4">Этап 2: Калькуляция</h3>
 
-            {!hasCalculation && (
-              <>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Заполните калькуляцию (колонки &quot;Наши характеристики&quot;
-                  и &quot;Наша цена&quot;) и загрузите обратно.
-                </p>
-                <FileDropzone
-                  procurementId={procurementId}
-                  label="Загрузите заполненную калькуляцию (.xlsx)"
-                  accept=".xlsx"
-                  onUploadComplete={handleCalculationUpload}
-                />
-              </>
-            )}
-
-            {hasCalculation && !isCompleted && (
-              <button
-                onClick={handleGenerateForms}
-                disabled={isGenerating}
-                className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
-              >
-                {isGenerating ? "Генерация..." : "Сгенерировать формы"}
-              </button>
-            )}
-
-            {isCompleted && generatedFiles && generatedFiles.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-sm font-medium mb-2">Готовые файлы:</h4>
-                <GeneratedFilesList files={generatedFiles} />
+            {calculationFile && calculationFile.url && (
+              <div className="mb-4">
+                <button
+                  onClick={async () => {
+                    const res = await fetch(calculationFile.url!);
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = calculationFile.fileName;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="inline-flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700"
+                >
+                  &#128229; Скачать калькуляцию
+                </button>
               </div>
+            )}
+
+            <p className="text-sm text-muted-foreground mb-4">
+              Заполните колонки H (Наши характеристики), I (Наша цена), L
+              (Примечание) и загрузите обратно.
+            </p>
+            <FileDropzone
+              procurementId={procurementId}
+              label={hasCalculation ? "Перезагрузить калькуляцию (.xlsx)" : "Загрузите заполненную калькуляцию (.xlsx)"}
+              accept=".xlsx"
+              onUploadComplete={handleCalculationUpload}
+            />
+          </div>
+        )}
+
+        {/* Stage 3: Form Filling */}
+        {hasCalculation && (
+          <div className="bg-white rounded-lg border p-6">
+            <h3 className="font-semibold mb-4">Этап 3: Заполнение форм</h3>
+
+            <button
+              onClick={handleFillForms}
+              disabled={isFilling}
+              className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+            >
+              {isFilling ? "Заполнение..." : isCompleted ? "Перезаполнить формы" : "Заполнить формы"}
+            </button>
+
+            {filledForms && filledForms.length > 0 && (
+              <div className="mt-4">
+                <h4 className="text-sm font-medium mb-2">
+                  Заполненные формы:
+                </h4>
+                <GeneratedFilesList files={filledForms} />
+              </div>
+            )}
+
+            {confidenceReport && (
+              <ConfidenceReportCard url={confidenceReport.url} />
             )}
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+// --- Confidence Report Component ---
+
+function ConfidenceReportCard({ url }: { url: string | null }) {
+  const [report, setReport] = useState<any[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const loadReport = useCallback(async () => {
+    if (!url || report) return;
+    setLoading(true);
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      setReport(data);
+    } finally {
+      setLoading(false);
+    }
+  }, [url, report]);
+
+  if (!url) return null;
+
+  return (
+    <div className="mt-6 p-4 bg-gray-50 rounded-lg border">
+      <h4 className="text-sm font-medium mb-3">Отчёт проверки</h4>
+      {!report && (
+        <button
+          onClick={loadReport}
+          disabled={loading}
+          className="text-sm text-blue-600 hover:text-blue-700"
+        >
+          {loading ? "Загрузка..." : "Показать отчёт"}
+        </button>
+      )}
+      {report &&
+        report.map((formReport: any, idx: number) => (
+          <div key={idx} className="mb-4 last:mb-0">
+            <p className="text-sm font-medium">{formReport.formName}</p>
+            {formReport.fields?.map((field: any, fi: number) => (
+              <div key={fi} className="flex items-center gap-2 text-xs mt-1">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    field.confidence === "high"
+                      ? "bg-green-500"
+                      : field.confidence === "medium"
+                        ? "bg-yellow-500"
+                        : "bg-red-500"
+                  }`}
+                />
+                <span className="text-gray-600">{field.field}:</span>
+                <span>{field.value}</span>
+                {field.note && (
+                  <span className="text-gray-400">({field.note})</span>
+                )}
+              </div>
+            ))}
+            {formReport.warnings?.length > 0 && (
+              <div className="mt-2">
+                {formReport.warnings.map((w: string, wi: number) => (
+                  <p key={wi} className="text-xs text-orange-600">
+                    &#9888;&#65039; {w}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
     </div>
   );
 }

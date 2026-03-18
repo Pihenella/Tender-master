@@ -10,12 +10,13 @@
 
 import type * as analysis from "../analysis.js";
 import type * as analysisHelpers from "../analysisHelpers.js";
-import type * as calculationTemplate from "../calculationTemplate.js";
 import type * as calculationUpload from "../calculationUpload.js";
+import type * as docxSlicer from "../docxSlicer.js";
 import type * as files from "../files.js";
-import type * as generation from "../generation.js";
+import type * as formFilling from "../formFilling.js";
 import type * as logistics from "../logistics.js";
 import type * as procurements from "../procurements.js";
+import type * as sonnetApi from "../sonnetApi.js";
 
 import type {
   ApiFromModules,
@@ -26,12 +27,13 @@ import type {
 declare const fullApi: ApiFromModules<{
   analysis: typeof analysis;
   analysisHelpers: typeof analysisHelpers;
-  calculationTemplate: typeof calculationTemplate;
   calculationUpload: typeof calculationUpload;
+  docxSlicer: typeof docxSlicer;
   files: typeof files;
-  generation: typeof generation;
+  formFilling: typeof formFilling;
   logistics: typeof logistics;
   procurements: typeof procurements;
+  sonnetApi: typeof sonnetApi;
 }>;
 
 /**

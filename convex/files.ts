@@ -95,45 +95,28 @@ export const saveGeneratedFile = mutation({
     profileId: v.union(v.literal("boltinov"), v.literal("pikhenek")),
     storageId: v.id("_storage"),
     fileName: v.string(),
-    formType: v.union(
-      v.literal("form2"),
-      v.literal("form3"),
-      v.literal("form6"),
-      v.literal("techProposal"),
-      v.literal("priceProposal"),
-      v.literal("calculation")
-    ),
+    formType: v.string(),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("generatedFiles", args);
   },
 });
 
-export const getFormTemplate = query({
-  args: { name: v.string() },
+export const getExtractedForms = query({
+  args: { procurementId: v.id("procurements") },
   handler: async (ctx, args) => {
-    return await ctx.db
-      .query("formTemplates")
-      .withIndex("by_name", (q) => q.eq("name", args.name))
-      .first();
-  },
-});
+    const forms = await ctx.db
+      .query("extractedForms")
+      .withIndex("by_procurement", (q) =>
+        q.eq("procurementId", args.procurementId)
+      )
+      .collect();
 
-export const saveFormTemplate = mutation({
-  args: {
-    name: v.string(),
-    storageId: v.id("_storage"),
-    fileName: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("formTemplates")
-      .withIndex("by_name", (q) => q.eq("name", args.name))
-      .first();
-    if (existing) {
-      await ctx.storage.delete(existing.storageId);
-      await ctx.db.delete(existing._id);
-    }
-    return await ctx.db.insert("formTemplates", args);
+    return Promise.all(
+      forms.map(async (form) => ({
+        ...form,
+        url: await ctx.storage.getUrl(form.storageId),
+      }))
+    );
   },
 });

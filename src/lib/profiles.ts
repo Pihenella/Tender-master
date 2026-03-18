@@ -20,16 +20,35 @@ export interface CompanyProfile {
   };
   director: {
     fio: string;
+    fioShort: string;
     position: string;
     phone: string;
     email: string;
   };
+  passport: {
+    series: string;
+    number: string;
+    issueDate: string;
+    issuedBy: string;
+    departmentCode: string;
+  };
+  registration: {
+    ogrnDate: string;
+    ogrnRecord: string;
+  };
+  tax: {
+    system: string;
+    ndsRate: number;
+    ndsLabel: string;
+  };
   ownershipChain: Array<{
     fio: string;
     inn: string;
+    ogrn: string;
     role: string;
     share: string;
-    document: string;
+    address: string;
+    passport: string;
   }>;
 }
 
@@ -43,24 +62,51 @@ export const profiles: Record<string, CompanyProfile> = {
     okpo: "2030070106",
     kpp: "",
     oktmo: "94701000001",
-    okved: "",
-    legalAddress: "Республика Удмуртская, г. Ижевск, улица имени Сабурова А.Н., дом 47, кв. 34",
-    mailingAddress: "Республика Удмуртская, г. Ижевск, улица имени Сабурова А.Н., дом 47, кв. 34",
-    actualAddress: "Республика Удмуртская, г. Ижевск, улица имени Сабурова А.Н., дом 47, кв. 34",
+    okved: "47.91",
+    legalAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
+    mailingAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
+    actualAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
     bank: {
       name: "ООО \"Банк Точка\"",
       bic: "044525104",
       account: "40802810220000245984",
       corrAccount: "30101810745374525104",
-      address: "109456, Россия, г. Москва, 1-й Вешняковский пр., дом 1, стр. 8, 1 этаж, пом. №43",
+      address: "109456, РОССИЯ, МОСКВА г. 1-Й ВЕШНЯКОВСКИЙ пр, ДОМ 1 СТР8, 1 этаж, пом.№43",
     },
     director: {
       fio: "Болтинов Данил Александрович",
+      fioShort: "Болтинов Д.А.",
       position: "Индивидуальный предприниматель",
-      phone: "89193876713",
+      phone: "+79193876713",
       email: "boltinov99@mail.ru",
     },
-    ownershipChain: [],
+    passport: {
+      series: "6519",
+      number: "880947",
+      issueDate: "22.05.2019",
+      issuedBy: "ГУ МВД России по Свердловской области",
+      departmentCode: "660-008",
+    },
+    registration: {
+      ogrnDate: "22.02.2024",
+      ogrnRecord: "324665800041636",
+    },
+    tax: {
+      system: "УСН",
+      ndsRate: 5,
+      ndsLabel: "НДС 5%",
+    },
+    ownershipChain: [
+      {
+        fio: "Болтинов Данил Александрович",
+        inn: "662302062065",
+        ogrn: "324665800041636",
+        role: "руководитель",
+        share: "100%",
+        address: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
+        passport: "6519 880947",
+      },
+    ],
   },
   pikhenek: {
     id: "pikhenek",
@@ -80,15 +126,42 @@ export const profiles: Record<string, CompanyProfile> = {
       bic: "044525104",
       account: "40802810320000245978",
       corrAccount: "30101810745374525104",
-      address: "109456, Россия, г. Москва, 1-й Вешняковский пр., дом 1, стр. 8, 1 этаж, пом. №43",
+      address: "109456, РОССИЯ, МОСКВА г. 1-Й ВЕШНЯКОВСКИЙ пр, ДОМ 1 СТР8, 1 этаж, пом.№43",
     },
     director: {
       fio: "Пихенек Юрий Дмитриевич",
+      fioShort: "Пихенек Ю.Д.",
       position: "Индивидуальный предприниматель",
       phone: "+79920027767",
       email: "rukovoditelmp@yandex.ru",
     },
-    ownershipChain: [],
+    passport: {
+      series: "",
+      number: "",
+      issueDate: "",
+      issuedBy: "",
+      departmentCode: "",
+    },
+    registration: {
+      ogrnDate: "22.02.2024",
+      ogrnRecord: "324665800041941",
+    },
+    tax: {
+      system: "УСН",
+      ndsRate: 5,
+      ndsLabel: "НДС 5%",
+    },
+    ownershipChain: [
+      {
+        fio: "Пихенек Юрий Дмитриевич",
+        inn: "662306468179",
+        ogrn: "324665800041941",
+        role: "руководитель",
+        share: "100%",
+        address: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32",
+        passport: "",
+      },
+    ],
   },
 };
 

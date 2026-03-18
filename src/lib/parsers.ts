@@ -6,6 +6,63 @@ export async function parseDocx(buffer: Buffer): Promise<string> {
   return result.value;
 }
 
+export async function parseDocxWithBlocks(buffer: Buffer): Promise<string> {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(buffer);
+  const docXml = await zip.file("word/document.xml")?.async("string");
+  if (!docXml) return "[No document.xml found]";
+
+  const bodyMatch = docXml.match(/<w:body[^>]*>([\s\S]*)<\/w:body>/);
+  if (!bodyMatch) return "[No body found]";
+  const bodyContent = bodyMatch[1];
+
+  // Split body into top-level elements (w:p, w:tbl, etc.)
+  const blockRegex = /<(w:p|w:tbl|w:sdt)\b[\s\S]*?<\/\1>/g;
+  const blocks: string[] = [];
+  let match;
+
+  while ((match = blockRegex.exec(bodyContent)) !== null) {
+    const element = match[0];
+    const tagName = match[1];
+
+    if (tagName === "w:tbl") {
+      // Extract all text from table cells, format as rows
+      const rows: string[] = [];
+      const rowRegex = /<w:tr\b[\s\S]*?<\/w:tr>/g;
+      let rowMatch;
+      while ((rowMatch = rowRegex.exec(element)) !== null) {
+        const cells: string[] = [];
+        const cellRegex = /<w:tc\b[\s\S]*?<\/w:tc>/g;
+        let cellMatch;
+        while ((cellMatch = cellRegex.exec(rowMatch[0])) !== null) {
+          const cellText = cellMatch[0]
+            .replace(/<[^>]+>/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+          cells.push(cellText);
+        }
+        rows.push("| " + cells.join(" | ") + " |");
+      }
+      blocks.push(rows.join("\n"));
+    } else {
+      // Paragraph: extract text
+      const text = element
+        .replace(/<[^>]+>/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (text) {
+        blocks.push(text);
+      } else {
+        blocks.push(""); // empty paragraph still gets a block number
+      }
+    }
+  }
+
+  return blocks
+    .map((text, i) => `[Block ${i + 1}] ${text}`)
+    .join("\n");
+}
+
 export async function parseXlsx(buffer: Buffer): Promise<string> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);

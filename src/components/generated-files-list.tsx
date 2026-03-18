@@ -37,13 +37,21 @@ export function GeneratedFilesList({ files }: { files: GeneratedFile[] }) {
           >
             <span className="text-sm">{file.fileName}</span>
             {file.url && (
-              <a
-                href={file.url}
-                download={file.fileName}
+              <button
+                onClick={async () => {
+                  const res = await fetch(file.url!);
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = file.fileName;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
                 className="text-sm text-blue-600 hover:text-blue-700"
               >
                 Скачать
-              </a>
+              </button>
             )}
           </div>
         ))}

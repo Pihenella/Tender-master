@@ -17,10 +17,8 @@ export default defineSchema({
       v.literal("uploaded"),
       v.literal("analyzing"),
       v.literal("analyzed"),
-      v.literal("reviewed"),
-      v.literal("template_downloaded"),
       v.literal("calculation_uploaded"),
-      v.literal("generating"),
+      v.literal("filling_forms"),
       v.literal("completed"),
       v.literal("error")
     ),
@@ -56,14 +54,29 @@ export default defineSchema({
     deliveryCostEstimated: v.boolean(),
   }).index("by_procurement", ["procurementId"]),
 
+  extractedForms: defineTable({
+    procurementId: v.id("procurements"),
+    name: v.string(),
+    storageId: v.id("_storage"),
+    fileName: v.string(),
+    sourceFile: v.string(),
+    fileType: v.string(),
+    locationType: v.string(),
+    sourceCoordinates: v.optional(v.string()),
+  }).index("by_procurement", ["procurementId"]),
+
   calculationData: defineTable({
     procurementId: v.id("procurements"),
-    itemId: v.id("extractedItems"),
-    ourSpecs: v.string(),
-    ourUnitPrice: v.number(),
-    ourTotal: v.number(),
-    margin: v.number(),
-    otherExpenses: v.number(),
+    itemIndex: v.number(),
+    itemName: v.string(),
+    pp1875: v.optional(v.string()),
+    quantity: v.number(),
+    nmckPrice: v.number(),
+    tzSpecs: v.optional(v.string()),
+    ourSpecs: v.optional(v.string()),
+    ourUnitPrice: v.optional(v.number()),
+    ourTotal: v.optional(v.number()),
+    notes: v.optional(v.string()),
   }).index("by_procurement", ["procurementId"]),
 
   generatedFiles: defineTable({
@@ -71,19 +84,6 @@ export default defineSchema({
     profileId: v.union(v.literal("boltinov"), v.literal("pikhenek")),
     storageId: v.id("_storage"),
     fileName: v.string(),
-    formType: v.union(
-      v.literal("form2"),
-      v.literal("form3"),
-      v.literal("form6"),
-      v.literal("techProposal"),
-      v.literal("priceProposal"),
-      v.literal("calculation")
-    ),
+    formType: v.string(),
   }).index("by_procurement", ["procurementId"]),
-
-  formTemplates: defineTable({
-    name: v.string(),
-    storageId: v.id("_storage"),
-    fileName: v.string(),
-  }).index("by_name", ["name"]),
 });

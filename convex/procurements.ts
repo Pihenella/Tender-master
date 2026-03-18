@@ -39,10 +39,8 @@ export const updateStatus = mutation({
       v.literal("uploaded"),
       v.literal("analyzing"),
       v.literal("analyzed"),
-      v.literal("reviewed"),
-      v.literal("template_downloaded"),
       v.literal("calculation_uploaded"),
-      v.literal("generating"),
+      v.literal("filling_forms"),
       v.literal("completed"),
       v.literal("error")
     ),
@@ -74,7 +72,7 @@ export const updateFromAnalysis = mutation({
   },
   handler: async (ctx, args) => {
     const { id, ...data } = args;
-    await ctx.db.patch(id, { ...data, status: "analyzed" });
+    await ctx.db.patch(id, data);
   },
 });
 
@@ -98,6 +96,15 @@ export const remove = mutation({
       await ctx.db.delete(item._id);
     }
 
+    const extractedForms = await ctx.db
+      .query("extractedForms")
+      .withIndex("by_procurement", (q) => q.eq("procurementId", args.id))
+      .collect();
+    for (const form of extractedForms) {
+      await ctx.storage.delete(form.storageId);
+      await ctx.db.delete(form._id);
+    }
+
     const calcData = await ctx.db
       .query("calculationData")
       .withIndex("by_procurement", (q) => q.eq("procurementId", args.id))
@@ -116,6 +123,28 @@ export const remove = mutation({
     }
 
     await ctx.db.delete(args.id);
+  },
+});
+
+export const cancelOperation = mutation({
+  args: { id: v.id("procurements") },
+  handler: async (ctx, args) => {
+    const procurement = await ctx.db.get(args.id);
+    if (!procurement) return;
+
+    if (procurement.status === "analyzing") {
+      await ctx.db.patch(args.id, {
+        status: "uploaded",
+        statusMessage: "Анализ отменён",
+        progress: 0,
+      });
+    } else if (procurement.status === "filling_forms") {
+      await ctx.db.patch(args.id, {
+        status: "calculation_uploaded",
+        statusMessage: "Заполнение форм отменено",
+        progress: 0,
+      });
+    }
   },
 });
 

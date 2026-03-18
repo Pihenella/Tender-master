@@ -42,17 +42,27 @@ export const updateStatus = mutation({
       v.literal("calculation_uploaded"),
       v.literal("filling_forms"),
       v.literal("completed"),
-      v.literal("error")
+      v.literal("error"),
+      v.literal("pending_local_analysis"),
+      v.literal("pending_local_fill")
     ),
     statusMessage: v.optional(v.string()),
     progress: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.id, {
+    const patch: Record<string, unknown> = {
       status: args.status,
       statusMessage: args.statusMessage,
       progress: args.progress,
-    });
+    };
+    const localStatuses = ["pending_local_analysis", "pending_local_fill", "analyzing", "filling_forms"];
+    if (localStatuses.includes(args.status)) {
+      const proc = await ctx.db.get(args.id);
+      if (proc?.processingMode === "local") {
+        patch.localStatusUpdatedAt = Date.now();
+      }
+    }
+    await ctx.db.patch(args.id, patch);
   },
 });
 
@@ -132,19 +142,45 @@ export const cancelOperation = mutation({
     const procurement = await ctx.db.get(args.id);
     if (!procurement) return;
 
-    if (procurement.status === "analyzing") {
+    if (procurement.status === "analyzing" || procurement.status === "pending_local_analysis") {
       await ctx.db.patch(args.id, {
         status: "uploaded",
         statusMessage: "Анализ отменён",
         progress: 0,
       });
-    } else if (procurement.status === "filling_forms") {
+    } else if (procurement.status === "filling_forms" || procurement.status === "pending_local_fill") {
       await ctx.db.patch(args.id, {
         status: "calculation_uploaded",
         statusMessage: "Заполнение форм отменено",
         progress: 0,
       });
     }
+  },
+});
+
+export const getPendingLocalTasks = query({
+  args: {},
+  handler: async (ctx) => {
+    const pending = await ctx.db
+      .query("procurements")
+      .filter((q) =>
+        q.or(
+          q.eq(q.field("status"), "pending_local_analysis"),
+          q.eq(q.field("status"), "pending_local_fill")
+        )
+      )
+      .collect();
+    return pending;
+  },
+});
+
+export const setProcessingMode = mutation({
+  args: {
+    id: v.id("procurements"),
+    processingMode: v.union(v.literal("cloud"), v.literal("local")),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { processingMode: args.processingMode });
   },
 });
 

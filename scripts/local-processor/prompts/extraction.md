@@ -6,9 +6,8 @@ Use the NotebookLM MCP tools to query the uploaded procurement documents and ext
 
 ## Steps
 
-1. First, use `list_notebooks` to find the notebook for this procurement
-2. Use `select_notebook` to activate it
-3. Make the following `ask_question` queries to extract data with citations:
+1. First, use `list_notebooks` to find the notebook for this procurement (match by title)
+2. Use `generate_chat` with the notebook_id to make the following queries:
 
 ### Query 1: Basic metadata
 Ask: "Какой номер закупки, название закупки, НМЦК (начальная максимальная цена контракта), срок поставки? Дай точные значения."

@@ -46,7 +46,11 @@ Return the structured JSON result.`;
     await client.updateStatus(task._id, "analyzing", "Локальный анализ: Claude Code обрабатывает...", 20);
 
     const rawOutput = await runClaude(prompt);
+    console.log("Claude raw output length:", rawOutput.length);
+    console.log("Claude raw output (first 2000 chars):", rawOutput.slice(0, 2000));
     const result = extractJsonFromOutput(rawOutput);
+    console.log("Parsed result keys:", Object.keys(result));
+    console.log("Items count:", result.items?.length, "calcRows:", result.calcRows?.length, "forms:", result.forms?.length);
 
     // Cancellation check
     const currentData = await client.getProcurementData(task._id);
@@ -72,7 +76,11 @@ Return the structured JSON result.`;
     }
 
     await client.updateStatus(task._id, "analyzing", "Генерация калькуляции...", 90);
-    await client.triggerCalc(task._id);
+    if ((result.items && result.items.length > 0) || (result.calcRows && result.calcRows.length > 0)) {
+      await client.triggerCalc(task._id);
+    } else {
+      console.warn("No items/calcRows — skipping calc generation");
+    }
 
     await client.updateStatus(
       task._id,

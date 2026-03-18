@@ -111,7 +111,8 @@ export const generateCalcExcel = internalAction({
     });
 
     if (!calcData || calcData.length === 0) {
-      throw new Error("No calculation data found");
+      console.warn("No calculation data found for", args.procurementId, "— skipping Excel generation");
+      return;
     }
 
     const ExcelJS = (await import("exceljs")).default;

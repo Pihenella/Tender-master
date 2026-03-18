@@ -9,7 +9,7 @@ ExecStart=/home/Iurii/Projects/tender-master/scripts/local-processor/node_module
 Restart=always
 RestartSec=10
 WorkingDirectory=/home/Iurii/Projects/tender-master/scripts/local-processor
-Environment=CONVEX_URL=https://industrious-salmon-568.convex.cloud
+Environment=CONVEX_URL=https://intent-toad-141.convex.site
 Environment=CLAUDE_TIMEOUT=900000
 EnvironmentFile=%h/.config/tender-master/env
 StandardOutput=journal

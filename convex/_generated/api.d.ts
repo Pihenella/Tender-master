@@ -11,6 +11,7 @@
 import type * as analysis from "../analysis.js";
 import type * as analysisActions from "../analysisActions.js";
 import type * as analysisHelpers from "../analysisHelpers.js";
+import type * as authHelper from "../authHelper.js";
 import type * as calculationUpload from "../calculationUpload.js";
 import type * as crons from "../crons.js";
 import type * as docxSlicer from "../docxSlicer.js";
@@ -32,6 +33,7 @@ declare const fullApi: ApiFromModules<{
   analysis: typeof analysis;
   analysisActions: typeof analysisActions;
   analysisHelpers: typeof analysisHelpers;
+  authHelper: typeof authHelper;
   calculationUpload: typeof calculationUpload;
   crons: typeof crons;
   docxSlicer: typeof docxSlicer;

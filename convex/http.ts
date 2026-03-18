@@ -4,18 +4,32 @@ import { api, internal } from "./_generated/api";
 
 const http = httpRouter();
 
-function checkAuth(request: Request): boolean {
-  const secret = process.env.CONVEX_LOCAL_PROCESSOR_SECRET;
-  if (!secret) return false;
+async function checkAuth(ctx: any, request: Request): Promise<boolean> {
   const auth = request.headers.get("Authorization");
-  return auth === `Bearer ${secret}`;
+  if (!auth || !auth.startsWith("Bearer ")) return false;
+  const token = auth.slice(7);
+  try {
+    const secret = await ctx.runAction(internal.authHelper.getSecret, {});
+    return typeof secret === "string" && secret.length > 0 && secret === token;
+  } catch (e: any) {
+    console.error("Auth check error:", e.message);
+    return false;
+  }
 }
+
+http.route({
+  path: "/api/local/health",
+  method: "GET",
+  handler: httpAction(async () => {
+    return Response.json({ status: "ok" });
+  }),
+});
 
 http.route({
   path: "/api/local/pending-tasks",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    if (!checkAuth(request)) {
+    if (!(await checkAuth(ctx, request))) {
       return new Response("Unauthorized", { status: 401 });
     }
     const tasks = await ctx.runQuery(api.procurements.getPendingLocalTasks, {});
@@ -27,7 +41,7 @@ http.route({
   path: "/api/local/update-status",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!checkAuth(request)) {
+    if (!(await checkAuth(ctx, request))) {
       return new Response("Unauthorized", { status: 401 });
     }
     const body = await request.json();
@@ -45,7 +59,7 @@ http.route({
   path: "/api/local/save-analysis",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!checkAuth(request)) {
+    if (!(await checkAuth(ctx, request))) {
       return new Response("Unauthorized", { status: 401 });
     }
     const body = await request.json();
@@ -104,7 +118,7 @@ http.route({
   path: "/api/local/trigger-slice",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!checkAuth(request)) {
+    if (!(await checkAuth(ctx, request))) {
       return new Response("Unauthorized", { status: 401 });
     }
     const body = await request.json();
@@ -120,7 +134,7 @@ http.route({
   path: "/api/local/trigger-calc",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!checkAuth(request)) {
+    if (!(await checkAuth(ctx, request))) {
       return new Response("Unauthorized", { status: 401 });
     }
     const body = await request.json();
@@ -135,7 +149,7 @@ http.route({
   path: "/api/local/save-fill",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!checkAuth(request)) {
+    if (!(await checkAuth(ctx, request))) {
       return new Response("Unauthorized", { status: 401 });
     }
     const body = await request.json();
@@ -151,7 +165,7 @@ http.route({
   path: "/api/local/get-procurement",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    if (!checkAuth(request)) {
+    if (!(await checkAuth(ctx, request))) {
       return new Response("Unauthorized", { status: 401 });
     }
     const body = await request.json();

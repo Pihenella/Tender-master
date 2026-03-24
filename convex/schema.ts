@@ -25,6 +25,7 @@ export default defineSchema({
     statusMessage: v.optional(v.string()),
     progress: v.optional(v.number()),
     profileId: v.union(v.literal("boltinov"), v.literal("pikhenek")),
+    driveFolderId: v.optional(v.string()),
   }),
 
   procurementFiles: defineTable({
@@ -32,6 +33,7 @@ export default defineSchema({
     storageId: v.id("_storage"),
     fileName: v.string(),
     fileType: v.string(),
+    driveFileId: v.optional(v.string()),
   }).index("by_procurement", ["procurementId"]),
 
   extractedItems: defineTable({

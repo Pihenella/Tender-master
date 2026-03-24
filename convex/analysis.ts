@@ -7,6 +7,7 @@ import { parseFile } from "../src/lib/parsers";
 import { parseDocxWithBlocks } from "../src/lib/parsers";
 import { sliceDocx, sliceXlsxSheet } from "./docxSlicer";
 import { callOpus, extractJson } from "./opusApi";
+import { downloadFile as downloadFromDrive } from "./googleDrive";
 
 // --- Stage 1: Opus extraction prompt ---
 
@@ -123,14 +124,22 @@ export const analyzeDocuments = action({
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        if (!file.url) continue;
+        if (!file.url && !file.driveFileId) continue;
         await updateProgress(
           `Парсинг файла ${i + 1}/${files.length}: ${file.fileName}`,
           Math.round((i / files.length) * 15)
         );
-        const response = await fetch(file.url);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
+
+        let buffer: Buffer;
+        if (file.driveFileId) {
+          // Download from Google Drive
+          buffer = await downloadFromDrive(file.driveFileId);
+        } else {
+          // Fallback: download from Convex storage
+          const response = await fetch(file.url!);
+          const arrayBuffer = await response.arrayBuffer();
+          buffer = Buffer.from(arrayBuffer);
+        }
 
         const ext = file.fileName.split(".").pop()?.toLowerCase();
         let content: string;

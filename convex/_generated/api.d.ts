@@ -18,6 +18,7 @@ import type * as docxSlicer from "../docxSlicer.js";
 import type * as files from "../files.js";
 import type * as formFilling from "../formFilling.js";
 import type * as formFillingActions from "../formFillingActions.js";
+import type * as googleDrive from "../googleDrive.js";
 import type * as http from "../http.js";
 import type * as logistics from "../logistics.js";
 import type * as opusApi from "../opusApi.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   files: typeof files;
   formFilling: typeof formFilling;
   formFillingActions: typeof formFillingActions;
+  googleDrive: typeof googleDrive;
   http: typeof http;
   logistics: typeof logistics;
   opusApi: typeof opusApi;

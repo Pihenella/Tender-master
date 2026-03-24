@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -20,6 +20,7 @@ export function FileDropzone({
 }: FileDropzoneProps) {
   const generateUploadUrl = useMutation(api.files.generateUploadUrl);
   const saveFile = useMutation(api.files.saveFile);
+  const uploadToDrive = useAction(api.files.uploadToDrive);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
@@ -29,6 +30,7 @@ export function FileDropzone({
       let lastStorageId: Id<"_storage"> | null = null;
       try {
         for (const file of Array.from(fileList)) {
+          // Upload to Convex storage
           const uploadUrl = await generateUploadUrl();
           const result = await fetch(uploadUrl, {
             method: "POST",
@@ -37,12 +39,23 @@ export function FileDropzone({
           });
           const { storageId } = await result.json();
           lastStorageId = storageId;
-          await saveFile({
+          const fileId = await saveFile({
             procurementId,
             storageId,
             fileName: file.name,
             fileType: file.type,
           });
+
+          // Upload to Google Drive in background
+          uploadToDrive({
+            procurementId,
+            fileId,
+            storageId,
+            fileName: file.name,
+            fileType: file.type || "application/octet-stream",
+          }).catch((err: Error) =>
+            console.error("Google Drive upload failed:", err)
+          );
         }
         if (lastStorageId && onUploadComplete) {
           onUploadComplete(lastStorageId);
@@ -51,7 +64,7 @@ export function FileDropzone({
         setUploading(false);
       }
     },
-    [procurementId, generateUploadUrl, saveFile, onUploadComplete]
+    [procurementId, generateUploadUrl, saveFile, uploadToDrive, onUploadComplete]
   );
 
   return (

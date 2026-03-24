@@ -44,3 +44,6 @@ test/
 # local processor
 scripts/local-processor/profiles.json
 scripts/local-processor/node_modules
+
+# google service account key
+google-service-account.json

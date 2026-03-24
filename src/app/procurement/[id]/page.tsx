@@ -40,31 +40,18 @@ export default function ProcurementPage({
   const parseCalculation = useAction(api.calculationUpload.parseCalculation);
   const fillForms = useAction(api.formFilling.fillForms);
   const cancelOperation = useMutation(api.procurements.cancelOperation);
-  const updateStatus = useMutation(api.procurements.updateStatus);
-  const setProcessingMode = useMutation(api.procurements.setProcessingMode);
 
   const [profileId, setProfileId] = useState<ProfileId>("pikhenek");
   const [analyzing, setAnalyzing] = useState(false);
 
-  const isLocalMode = procurement?.processingMode === "local";
-
   const handleAnalyze = useCallback(async () => {
-    if (isLocalMode) {
-      await updateStatus({
-        id: procurementId,
-        status: "pending_local_analysis",
-        statusMessage: "Ожидание локального обработчика...",
-        progress: 0,
-      });
-    } else {
-      setAnalyzing(true);
-      try {
-        await analyzeDocuments({ procurementId });
-      } finally {
-        setAnalyzing(false);
-      }
+    setAnalyzing(true);
+    try {
+      await analyzeDocuments({ procurementId });
+    } finally {
+      setAnalyzing(false);
     }
-  }, [analyzeDocuments, procurementId, isLocalMode, updateStatus]);
+  }, [analyzeDocuments, procurementId]);
 
   const handleCalculationUpload = useCallback(
     async (storageId: Id<"_storage">) => {
@@ -74,17 +61,8 @@ export default function ProcurementPage({
   );
 
   const handleFillForms = useCallback(async () => {
-    if (isLocalMode) {
-      await updateStatus({
-        id: procurementId,
-        status: "pending_local_fill",
-        statusMessage: "Ожидание локального обработчика...",
-        progress: 0,
-      });
-    } else {
-      await fillForms({ procurementId });
-    }
-  }, [fillForms, procurementId, isLocalMode, updateStatus]);
+    await fillForms({ procurementId });
+  }, [fillForms, procurementId]);
 
   const handleCancel = useCallback(async () => {
     await cancelOperation({ id: procurementId });
@@ -106,15 +84,14 @@ export default function ProcurementPage({
       </div>
     );
 
-  const isPendingLocal = procurement.status === "pending_local_analysis" || procurement.status === "pending_local_fill";
-  const isAnalyzing = procurement.status === "analyzing" || procurement.status === "pending_local_analysis" || analyzing;
+  const isAnalyzing = procurement.status === "analyzing" || analyzing;
   const isAnalyzed = [
     "analyzed",
     "calculation_uploaded",
     "filling_forms",
     "completed",
   ].includes(procurement.status);
-  const isFilling = procurement.status === "filling_forms" || procurement.status === "pending_local_fill";
+  const isFilling = procurement.status === "filling_forms";
   const isCompleted = procurement.status === "completed";
   const hasCalculation = [
     "calculation_uploaded",
@@ -156,31 +133,7 @@ export default function ProcurementPage({
               </p>
             )}
           </div>
-          <div className="flex items-center gap-3">
-            <StatusBadge status={procurement.status} />
-            <div className="flex items-center gap-2 text-sm">
-              <span className={!isLocalMode ? "font-medium" : "text-muted-foreground"}>
-                Облако
-              </span>
-              <button
-                onClick={() => setProcessingMode({
-                  id: procurementId,
-                  processingMode: isLocalMode ? "cloud" : "local",
-                })}
-                disabled={isAnalyzing || isFilling || isPendingLocal}
-                className={`relative w-10 h-5 rounded-full transition-colors disabled:opacity-50 ${
-                  isLocalMode ? "bg-purple-500" : "bg-gray-300"
-                }`}
-              >
-                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-                  isLocalMode ? "translate-x-5" : "translate-x-0.5"
-                }`} />
-              </button>
-              <span className={isLocalMode ? "font-medium" : "text-muted-foreground"}>
-                Локально
-              </span>
-            </div>
-          </div>
+          <StatusBadge status={procurement.status} />
         </div>
 
         {procurement.statusMessage && procurement.statusMessage.startsWith("Ошибка") && (
@@ -195,7 +148,7 @@ export default function ProcurementPage({
           </div>
         )}
 
-        {(isAnalyzing || isFilling || isPendingLocal) && (
+        {(isAnalyzing || isFilling) && (
           <div className="mb-4 p-4 bg-blue-50 rounded-lg">
             <ProgressBar
               progress={procurement.progress ?? 0}

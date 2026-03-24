@@ -12,14 +12,6 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   },
   completed: { label: "Готово", color: "bg-emerald-100 text-emerald-700" },
   error: { label: "Ошибка", color: "bg-red-100 text-red-700" },
-  pending_local_analysis: {
-    label: "Ожидание локального анализа...",
-    color: "bg-purple-100 text-purple-700",
-  },
-  pending_local_fill: {
-    label: "Ожидание локального заполнения...",
-    color: "bg-purple-100 text-purple-700",
-  },
 };
 
 export function StatusBadge({ status }: { status: string }) {

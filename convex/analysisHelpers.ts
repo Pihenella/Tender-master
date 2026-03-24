@@ -170,6 +170,49 @@ export const clearExtractedForms = internalMutation({
   },
 });
 
+export const saveExtractedItemsBatch = internalMutation({
+  args: {
+    items: v.array(v.object({
+      procurementId: v.id("procurements"),
+      name: v.string(),
+      quantity: v.number(),
+      unit: v.string(),
+      nmckPrice: v.number(),
+      tzSpecs: v.string(),
+      quarter: v.string(),
+      estimatedWeight: v.number(),
+      estimatedDimensions: v.string(),
+      deliveryAllocations: v.array(v.object({ address: v.string(), quantity: v.number() })),
+      deliveryCost: v.number(),
+      deliveryCostEstimated: v.boolean(),
+    })),
+  },
+  handler: async (ctx, args) => {
+    for (const item of args.items) {
+      await ctx.db.insert("extractedItems", item);
+    }
+  },
+});
+
+export const saveCalculationItemsBatch = internalMutation({
+  args: {
+    items: v.array(v.object({
+      procurementId: v.id("procurements"),
+      itemIndex: v.number(),
+      itemName: v.string(),
+      pp1875: v.optional(v.string()),
+      quantity: v.number(),
+      nmckPrice: v.number(),
+      tzSpecs: v.optional(v.string()),
+    })),
+  },
+  handler: async (ctx, args) => {
+    for (const item of args.items) {
+      await ctx.db.insert("calculationData", item);
+    }
+  },
+});
+
 export const clearGeneratedFilesExceptCalculation = internalMutation({
   args: { procurementId: v.id("procurements") },
   handler: async (ctx, args) => {

@@ -1,12 +1,17 @@
-const POLZA_BASE_URL = "https://polza.ai/api/v1";
-const SONNET_MODEL = "anthropic/claude-sonnet-4.6";
+"use node";
 
-export async function callSonnet(
-  apiKey: string,
+const POLZA_BASE_URL = "https://polza.ai/api/v1";
+const OPUS_MODEL = "anthropic/claude-opus-4.6";
+
+export async function callOpus(
   systemPrompt: string,
   userMessage: string,
+  maxTokens = 16384,
   maxRetries = 3
 ): Promise<string> {
+  const apiKey = process.env.POLZA_API_KEY;
+  if (!apiKey) throw new Error("POLZA_API_KEY is not set");
+
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const res = await fetch(`${POLZA_BASE_URL}/chat/completions`, {
       method: "POST",
@@ -15,12 +20,12 @@ export async function callSonnet(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: SONNET_MODEL,
+        model: OPUS_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
-        max_tokens: 16384,
+        max_tokens: maxTokens,
         temperature: 0.1,
       }),
     });
@@ -38,16 +43,14 @@ export async function callSonnet(
 
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content || "";
-    if (!content) throw new Error("Empty response from Sonnet");
+    if (!content) throw new Error("Empty response from Opus");
     return content;
   }
   throw new Error("Polza API: max retries exceeded");
 }
 
 function repairTruncatedJson(text: string): string {
-  // Remove trailing incomplete value (partial string, number, etc.)
   let s = text.replace(/,\s*"[^"]*$/, "").replace(/,\s*$/, "");
-  // Count unclosed brackets/braces and close them
   const stack: string[] = [];
   let inString = false;
   let escape = false;
@@ -64,9 +67,7 @@ function repairTruncatedJson(text: string): string {
   return s + stack.reverse().join("");
 }
 
-/** Sanitize control characters inside JSON string literals */
 function sanitizeJsonString(text: string): string {
-  // Replace unescaped control chars (newlines, tabs, etc.) inside string values
   return text.replace(/"(?:[^"\\]|\\.)*"/g, (match) =>
     match
       .replace(/\n/g, "\\n")
@@ -86,7 +87,6 @@ export function extractJson(text: string): any {
       text.match(/(\[[\s\S]*\])/) ||
       text.match(/(\{[\s\S]*\})/);
     let jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : text;
-    // Sanitize control characters inside strings
     jsonStr = sanitizeJsonString(jsonStr);
     try {
       return JSON.parse(jsonStr);

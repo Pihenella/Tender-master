@@ -20,16 +20,11 @@ export default defineSchema({
       v.literal("calculation_uploaded"),
       v.literal("filling_forms"),
       v.literal("completed"),
-      v.literal("error"),
-      v.literal("pending_local_analysis"),
-      v.literal("pending_local_fill")
+      v.literal("error")
     ),
     statusMessage: v.optional(v.string()),
     progress: v.optional(v.number()),
     profileId: v.union(v.literal("boltinov"), v.literal("pikhenek")),
-    processingMode: v.optional(v.union(v.literal("cloud"), v.literal("local"))),
-    localRetryCount: v.optional(v.number()),
-    localStatusUpdatedAt: v.optional(v.number()),
   }),
 
   procurementFiles: defineTable({

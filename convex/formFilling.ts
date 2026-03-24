@@ -3,7 +3,7 @@
 import { v } from "convex/values";
 import { action, internalAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
-import { callSonnet, extractJson } from "./sonnetApi";
+import { callOpus, extractJson } from "./opusApi";
 import { parseFile } from "../src/lib/parsers";
 import { profiles } from "../src/lib/profiles";
 import JSZip from "jszip";
@@ -240,8 +240,6 @@ export const fillSingleForm = internalAction({
       const currentStatus = await ctx.runQuery(api.procurements.get, { id: procurementId });
       if (!currentStatus || currentStatus.status !== "filling_forms") return;
 
-      const polzaKey = process.env.POLZA_API_KEY ?? "pza_euzSxelW6Ws0HoPbmBXf_RVyJOKtLwfA";
-
       const { procurement, contextData } = await buildContextData(ctx, procurementId);
 
       const extractedForms = await ctx.runQuery(api.files.getExtractedForms, {
@@ -287,9 +285,8 @@ export const fillSingleForm = internalAction({
         form.fileName
       );
 
-      // Get fill instructions from Sonnet
-      const fillResult = await callSonnet(
-        polzaKey,
+      // Get fill instructions from Opus
+      const fillResult = await callOpus(
         FORM_ANALYSIS_PROMPT,
         `Форма для заполнения: "${form.name}"\n\nТекст формы:\n${formText}\n\nДанные для заполнения:\n${JSON.stringify(contextData, null, 2)}`
       );
@@ -313,8 +310,7 @@ export const fillSingleForm = internalAction({
         form.fileName
       );
 
-      const checkResult = await callSonnet(
-        polzaKey,
+      const checkResult = await callOpus(
         SELF_CHECK_PROMPT,
         `Исходные данные:\n${JSON.stringify(contextData, null, 2)}\n\nЗаполненная форма "${form.name}":\n${filledText}`
       );

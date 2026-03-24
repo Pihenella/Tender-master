@@ -6,9 +6,9 @@ import { internal, api } from "./_generated/api";
 import { parseFile } from "../src/lib/parsers";
 import { parseDocxWithBlocks } from "../src/lib/parsers";
 import { sliceDocx, sliceXlsxSheet } from "./docxSlicer";
-import { callSonnet, extractJson } from "./sonnetApi";
+import { callOpus, extractJson } from "./opusApi";
 
-// --- Stage 1: Flash prompts ---
+// --- Stage 1: Opus extraction prompt ---
 
 const EXTRACTION_PROMPT = `You are analyzing Russian procurement (закупка) documentation files.
 The documents include block numbers [Block N] for DOCX files.
@@ -60,73 +60,7 @@ IMPORTANT:
 - Do NOT invent forms. Only include forms actually present in the documents.
 - Return ONLY valid JSON, no markdown or comments`;
 
-const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-
-function repairTruncatedJson(text: string): string {
-  // Remove trailing incomplete value (partial string, number, etc.)
-  let s = text.replace(/,\s*"[^"]*$/, "").replace(/,\s*$/, "");
-  // Count unclosed brackets/braces and close them
-  const stack: string[] = [];
-  let inString = false;
-  let escape = false;
-  for (const ch of s) {
-    if (escape) { escape = false; continue; }
-    if (ch === "\\") { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === "{") stack.push("}");
-    else if (ch === "[") stack.push("]");
-    else if (ch === "}" || ch === "]") stack.pop();
-  }
-  if (inString) s += '"';
-  return s + stack.reverse().join("");
-}
-
-async function callGemini(
-  apiKey: string,
-  prompt: string,
-  maxRetries = 3
-): Promise<string> {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          maxOutputTokens: 65536,
-          temperature: 0.1,
-          responseMimeType: "application/json",
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
-    });
-
-    if (res.status === 429) {
-      const waitMs = 60000 * (attempt + 1);
-      await new Promise((r) => setTimeout(r, waitMs));
-      continue;
-    }
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Gemini API ${res.status}: ${errText}`);
-    }
-
-    const data = await res.json();
-    const text =
-      data.candidates?.[0]?.content?.parts
-        ?.map((p: any) => p.text)
-        .join("") || "";
-
-    if (!text) throw new Error("Empty response from Gemini");
-    return text;
-  }
-  throw new Error("Gemini API: max retries exceeded");
-}
-
-// --- Stage 3: Sonnet calculation prompt ---
+// --- Stage 3: Calculation prompt ---
 
 const CALCULATION_SYSTEM_PROMPT = `You are filling a procurement calculation spreadsheet.
 Given the extracted items from procurement documentation, return a JSON array where each element represents one row:
@@ -151,7 +85,6 @@ export const analyzeDocuments = action({
   args: { procurementId: v.id("procurements") },
   handler: async (ctx, args) => {
     const updateProgress = async (msg: string, progress: number) => {
-      // Check if operation was cancelled before updating
       const current = await ctx.runQuery(api.procurements.get, {
         id: args.procurementId,
       });
@@ -167,7 +100,7 @@ export const analyzeDocuments = action({
     };
 
     try {
-      // ========== STAGE 1: Flash Analysis (0-60%) ==========
+      // ========== STAGE 1: Opus Analysis (0-60%) ==========
 
       await updateProgress("Загрузка файлов...", 0);
 
@@ -199,7 +132,6 @@ export const analyzeDocuments = action({
         const arrayBuffer = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
-        // For DOCX: use block-numbered parser so Flash can specify form locations
         const ext = file.fileName.split(".").pop()?.toLowerCase();
         let content: string;
         if (ext === "docx") {
@@ -217,14 +149,11 @@ export const analyzeDocuments = action({
         });
       }
 
-      // Prioritize and truncate
+      // Prioritize and truncate for Opus context
       await updateProgress(
-        `Отправка ${parsedFiles.length} файлов в ИИ...`,
+        `Отправка ${parsedFiles.length} файлов в Opus...`,
         15
       );
-
-      const geminiKey = process.env.GEMINI_API_KEY;
-      if (!geminiKey) throw new Error("GEMINI_API_KEY is not set");
 
       const MAX_CHARS = 500000;
       const priorityKeywords = [
@@ -272,30 +201,17 @@ export const analyzeDocuments = action({
         .map((f) => `=== FILE: ${f.name} ===\n${f.content}`)
         .join("\n\n---\n\n");
 
-      const fullPrompt = `${EXTRACTION_PROMPT}\n\nДокументы:\n\n${fileContents}`;
+      await updateProgress("Opus анализирует документы...", 20);
 
-      await updateProgress("ИИ анализирует документы...", 20);
+      const result = await callOpus(
+        EXTRACTION_PROMPT,
+        `Документы:\n\n${fileContents}`,
+        65536
+      );
 
-      const result = await callGemini(geminiKey, fullPrompt);
+      await updateProgress("Обработка ответа Opus...", 50);
 
-      await updateProgress("Обработка ответа ИИ...", 50);
-
-      let extractedData: any;
-      try {
-        extractedData = JSON.parse(result);
-      } catch {
-        // Try extracting JSON from markdown fences
-        const jsonMatch =
-          result.match(/```json\s*([\s\S]*?)\s*```/) ||
-          result.match(/\{[\s\S]*\}/);
-        const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : result;
-        try {
-          extractedData = JSON.parse(jsonStr);
-        } catch {
-          // Attempt to repair truncated JSON by closing open brackets
-          extractedData = JSON.parse(repairTruncatedJson(jsonStr));
-        }
-      }
+      const extractedData = extractJson(result);
 
       // Save procurement metadata
       await updateProgress("Сохранение метаданных закупки...", 55);
@@ -357,7 +273,6 @@ export const analyzeDocuments = action({
       await updateProgress("Нарезка форм из документов...", 60);
 
       const forms = extractedData.forms || [];
-      // Build a lookup of file buffers by name
       const fileBufferMap = new Map<string, { buffer: Buffer; storageId: any }>();
       for (const f of parsedFiles) {
         fileBufferMap.set(f.name, { buffer: f.buffer, storageId: f.storageId });
@@ -375,7 +290,6 @@ export const analyzeDocuments = action({
         const fileData = fileBufferMap.get(sourceFile);
 
         if (locationType === "whole_file" && fileData) {
-          // Whole file — reuse storageId
           await ctx.runMutation(internal.analysisHelpers.saveExtractedForm, {
             procurementId: args.procurementId,
             name: String(form.name),
@@ -444,15 +358,11 @@ export const analyzeDocuments = action({
         }
       }
 
-      // ========== STAGE 3: Sonnet Calculation (70-95%) ==========
+      // ========== STAGE 3: Opus Calculation (70-95%) ==========
 
-      await updateProgress("Генерация калькуляции (Sonnet)...", 70);
+      await updateProgress("Генерация калькуляции (Opus)...", 70);
 
-      const polzaKey = process.env.POLZA_API_KEY ?? "pza_euzSxelW6Ws0HoPbmBXf_RVyJOKtLwfA";
-      if (!polzaKey) throw new Error("POLZA_API_KEY is not set");
-
-      // Prepare items data for Sonnet
-      const itemsForSonnet = items.map((item: any) => ({
+      const itemsForCalc = items.map((item: any) => ({
         name: item.name,
         quantity: item.quantity,
         unit: item.unit,
@@ -461,13 +371,12 @@ export const analyzeDocuments = action({
         pp1875: item.pp1875 || "",
       }));
 
-      const sonnetResult = await callSonnet(
-        polzaKey,
+      const calcResult = await callOpus(
         CALCULATION_SYSTEM_PROMPT,
-        `Позиции из документации закупки:\n\n${JSON.stringify(itemsForSonnet, null, 2)}`
+        `Позиции из документации закупки:\n\n${JSON.stringify(itemsForCalc, null, 2)}`
       );
 
-      const calcRows = extractJson(sonnetResult);
+      const calcRows = extractJson(calcResult);
 
       await updateProgress("Создание Excel калькуляции...", 85);
 
@@ -476,7 +385,6 @@ export const analyzeDocuments = action({
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet("Калькуляция");
 
-      // Headers matching the template
       const headers = [
         "№ п/п",
         "Наименование",
@@ -506,7 +414,6 @@ export const analyzeDocuments = action({
       };
       headerRow.alignment = { wrapText: true, vertical: "middle" };
 
-      // Fill data rows from Sonnet response
       const rowCount = Array.isArray(calcRows) ? calcRows.length : items.length;
       for (let i = 0; i < rowCount; i++) {
         const calcRow = Array.isArray(calcRows) ? calcRows[i] : null;
@@ -518,27 +425,25 @@ export const analyzeDocuments = action({
         const nmckPrice = Number(calcRow?.nmckPrice || origItem?.nmckPrice) || 0;
         const tzSpecs = calcRow?.tzSpecs || origItem?.tzSpecs || "";
 
-        const rowNum = i + 2; // 1-based, row 1 is header
+        const rowNum = i + 2;
         const row = sheet.addRow([
-          i + 1,         // A: № п/п
-          itemName,      // B: Наименование
-          pp1875,        // C: 1875 ПП
-          quantity,       // D: Количество
-          nmckPrice,      // E: НМЦК за ед.
-          null,           // F: formula
-          tzSpecs,        // G: Характеристики ТЗ
-          "",             // H: user fills
-          null,           // I: user fills
-          null,           // J: formula
-          "",             // K: optional
-          "",             // L: user fills
+          i + 1,
+          itemName,
+          pp1875,
+          quantity,
+          nmckPrice,
+          null,
+          tzSpecs,
+          "",
+          null,
+          null,
+          "",
+          "",
         ]);
 
-        // Formulas for F and J
         row.getCell(6).value = { formula: `D${rowNum}*E${rowNum}` } as any;
         row.getCell(10).value = { formula: `D${rowNum}*I${rowNum}` } as any;
 
-        // Highlight user-fill columns (H, I, L) in yellow
         [8, 9, 12].forEach((col) => {
           row.getCell(col).fill = {
             type: "pattern",
@@ -547,7 +452,6 @@ export const analyzeDocuments = action({
           };
         });
 
-        // Save calculation data (columns A-G from Sonnet)
         await ctx.runMutation(internal.analysisHelpers.saveCalculationItem, {
           procurementId: args.procurementId,
           itemIndex: i,
@@ -559,7 +463,6 @@ export const analyzeDocuments = action({
         });
       }
 
-      // Totals row
       const lastDataRow = rowCount + 1;
       const totalsRow = sheet.addRow([
         "",
@@ -587,7 +490,6 @@ export const analyzeDocuments = action({
         id: args.procurementId,
       });
 
-      // Clear old generated files before saving new ones
       await ctx.runMutation(internal.analysisHelpers.clearGeneratedFiles, {
         procurementId: args.procurementId,
       });
@@ -609,9 +511,7 @@ export const analyzeDocuments = action({
         progress: 100,
       });
     } catch (error: any) {
-      // Don't overwrite status if operation was cancelled by user
       if (error.message === "__CANCELLED__") return;
-      // Revert to uploaded so user can retry analysis
       await ctx.runMutation(api.procurements.updateStatus, {
         id: args.procurementId,
         status: "uploaded",

@@ -20,8 +20,8 @@ import type * as formFilling from "../formFilling.js";
 import type * as formFillingActions from "../formFillingActions.js";
 import type * as http from "../http.js";
 import type * as logistics from "../logistics.js";
+import type * as opusApi from "../opusApi.js";
 import type * as procurements from "../procurements.js";
-import type * as sonnetApi from "../sonnetApi.js";
 
 import type {
   ApiFromModules,
@@ -42,8 +42,8 @@ declare const fullApi: ApiFromModules<{
   formFillingActions: typeof formFillingActions;
   http: typeof http;
   logistics: typeof logistics;
+  opusApi: typeof opusApi;
   procurements: typeof procurements;
-  sonnetApi: typeof sonnetApi;
 }>;
 
 /**

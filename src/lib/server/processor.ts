@@ -215,7 +215,7 @@ function mergeDocxRunsSafe(xml: string): string {
   });
 }
 
-async function applyDocxInstructions(buffer: Buffer, instructions: any[]): Promise<Buffer> {
+async function applyDocxInstructions(buffer: Buffer, instructions: any[]): Promise<Buffer<ArrayBuffer>> {
   const zip = await JSZip.loadAsync(buffer);
   let xml = (await zip.file("word/document.xml")?.async("string")) || "";
   // Safe merge: only merge runs that contain just text (no field codes, drawings, etc.)
@@ -241,11 +241,11 @@ async function applyDocxInstructions(buffer: Buffer, instructions: any[]): Promi
   return Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
 }
 
-async function applyXlsxInstructions(buffer: Buffer, instructions: any[]): Promise<Buffer> {
+async function applyXlsxInstructions(buffer: Buffer, instructions: any[]): Promise<Buffer<ArrayBuffer>> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
   const s = wb.worksheets[0];
-  if (!s) return buffer;
+  if (!s) return Buffer.from(buffer) as Buffer<ArrayBuffer>;
   for (const inst of instructions) {
     if (inst.type === "cell" && inst.row && inst.col) s.getRow(inst.row).getCell(inst.col).value = inst.value;
     else if (inst.type === "fillRows" && inst.startRow && Array.isArray(inst.rows)) {

@@ -5,6 +5,7 @@ import { internalAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import JSZip from "jszip";
 import ExcelJS from "exceljs";
+import { extractJson } from "./opusApi";
 
 export const applyFillInstructions = internalAction({
   args: {
@@ -31,7 +32,7 @@ export const applyFillInstructions = internalAction({
       const form = forms.find((f) => f._id === formId);
       if (!form || !form.url) continue;
 
-      const instructions = JSON.parse(instructionsJson);
+      const instructions = extractJson(instructionsJson);
       const response = await fetch(form.url);
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
@@ -62,6 +63,57 @@ export const applyFillInstructions = internalAction({
   },
 });
 
+function safeReplaceInXmlConvex(docXml: string, search: string, value: string): string {
+  const safeValue = String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const searchXml = search.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  return docXml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paragraph) => {
+    const textNodes: { start: number; end: number; text: string }[] = [];
+    const tRe = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g;
+    let m;
+    while ((m = tRe.exec(paragraph)) !== null) {
+      textNodes.push({ start: m.index + m[0].indexOf(">") + 1, end: m.index + m[0].lastIndexOf("<"), text: m[1] });
+    }
+    if (textNodes.length === 0) return paragraph;
+
+    const concatenated = textNodes.map(n => n.text).join("");
+    const useXml = concatenated.indexOf(searchXml) !== -1;
+    const needle = useXml ? searchXml : search;
+
+    const matches: number[] = [];
+    let sf = 0;
+    while (true) { const idx = concatenated.indexOf(needle, sf); if (idx === -1) break; matches.push(idx); sf = idx + needle.length; }
+    if (matches.length === 0) return paragraph;
+
+    const newNodeTexts: string[] = textNodes.map(n => n.text);
+    for (let mi = matches.length - 1; mi >= 0; mi--) {
+      const matchStart = matches[mi], matchEnd = matchStart + needle.length;
+      let charPos = 0, placed = false;
+      for (let ni = 0; ni < textNodes.length; ni++) {
+        const nodeStart = charPos, nodeEnd = charPos + textNodes[ni].text.length;
+        if (nodeEnd > matchStart && nodeStart < matchEnd) {
+          const cutStart = Math.max(0, matchStart - nodeStart);
+          const cutEnd = Math.min(newNodeTexts[ni].length, matchEnd - nodeStart);
+          const before = newNodeTexts[ni].substring(0, cutStart), after = newNodeTexts[ni].substring(cutEnd);
+          newNodeTexts[ni] = !placed ? before + safeValue + after : before + after;
+          if (!placed) placed = true;
+        }
+        charPos = nodeEnd;
+      }
+    }
+
+    let result = paragraph, offset = 0;
+    for (let i = 0; i < textNodes.length; i++) {
+      if (newNodeTexts[i] !== textNodes[i].text) {
+        const origStart = textNodes[i].start + offset, origEnd = textNodes[i].end + offset;
+        result = result.substring(0, origStart) + newNodeTexts[i] + result.substring(origEnd);
+        offset += newNodeTexts[i].length - textNodes[i].text.length;
+      }
+    }
+    return result;
+  });
+}
+
 async function applyDocxInstructions(buffer: Buffer, instructions: any[]): Promise<Buffer> {
   const zip = await JSZip.loadAsync(buffer);
   let docXml = await zip.file("word/document.xml")?.async("string");
@@ -69,14 +121,12 @@ async function applyDocxInstructions(buffer: Buffer, instructions: any[]): Promi
 
   for (const instr of instructions) {
     if (instr.type === "replace" && instr.search && instr.value !== undefined) {
-      const searchEscaped = instr.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(searchEscaped, "g");
-      docXml = docXml.replace(regex, String(instr.value));
+      docXml = safeReplaceInXmlConvex(docXml, instr.search, String(instr.value));
     }
   }
 
   zip.file("word/document.xml", docXml);
-  const result = await zip.generateAsync({ type: "nodebuffer" });
+  const result = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
   return Buffer.from(result);
 }
 

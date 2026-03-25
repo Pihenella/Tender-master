@@ -74,7 +74,7 @@ export async function sliceDocx(
     }
   }
 
-  const result = await newZip.generateAsync({ type: "nodebuffer" });
+  const result = await newZip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
   return Buffer.from(result);
 }
 

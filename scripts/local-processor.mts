@@ -111,7 +111,7 @@ async function sliceDocx(docxBuffer: Buffer, startBlock: number, endBlock: numbe
     if (path === "word/document.xml") { newZip.file(path, preamble + newBody + postamble); }
     else { newZip.file(path, await file.async("uint8array")); }
   }
-  return Buffer.from(await newZip.generateAsync({ type: "nodebuffer" }));
+  return Buffer.from(await newZip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } }));
 }
 
 async function sliceXlsxSheet(xlsxBuffer: Buffer, sheetName: string): Promise<Buffer> {
@@ -164,10 +164,10 @@ const profiles: Record<string, any> = {
     actualAddress: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32",
     bank: { name: 'ООО "Банк Точка"', bic: "044525104", account: "40802810320000245978", corrAccount: "30101810745374525104", address: "109456, РОССИЯ, МОСКВА г. 1-Й ВЕШНЯКОВСКИЙ пр, ДОМ 1 СТР8, 1 этаж, пом.№43" },
     director: { fio: "Пихенек Юрий Дмитриевич", fioShort: "Пихенек Ю.Д.", position: "Индивидуальный предприниматель", phone: "+79920027767", email: "rukovoditelmp@yandex.ru" },
-    passport: { series: "", number: "", issueDate: "", issuedBy: "", departmentCode: "" },
+    passport: { series: "6521", number: "330759", issueDate: "09.07.2021", issuedBy: "ГУ МВД России по Свердловской области", departmentCode: "660-006" },
     registration: { ogrnDate: "22.02.2024", ogrnRecord: "324665800041941" },
     tax: { system: "УСН", ndsRate: 5, ndsLabel: "НДС 5%" },
-    ownershipChain: [{ fio: "Пихенек Юрий Дмитриевич", inn: "662306468179", ogrn: "324665800041941", role: "руководитель", share: "100%", address: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32", passport: "" }],
+    ownershipChain: [{ fio: "Пихенек Юрий Дмитриевич", inn: "662306468179", ogrn: "324665800041941", role: "руководитель", share: "100%", address: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32", passport: "6521 330759" }],
   },
 };
 
@@ -178,8 +178,13 @@ const POLL_INTERVAL = 5000;
 const client = new ConvexHttpClient(CONVEX_URL);
 
 // --- Claude CLI helper ---
+const CLAUDE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per call
+
 async function callClaude(systemPrompt: string, userMessage: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+
     const proc = spawn("claude", ["-p", "--system-prompt", systemPrompt], {
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -187,18 +192,29 @@ async function callClaude(systemPrompt: string, userMessage: string): Promise<st
     let stdout = "";
     let stderr = "";
 
+    const timer = setTimeout(() => {
+      settle(() => {
+        try { process.kill(-proc.pid!, "SIGKILL"); } catch {}
+        try { proc.kill("SIGKILL"); } catch {}
+        reject(new Error(`claude CLI timed out after ${CLAUDE_TIMEOUT_MS / 1000}s`));
+      });
+    }, CLAUDE_TIMEOUT_MS);
+
     proc.stdout.on("data", (data: Buffer) => { stdout += data.toString(); });
     proc.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
 
     proc.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`claude CLI exited with code ${code}: ${stderr}`));
-      } else {
-        resolve(stdout.trim());
-      }
+      clearTimeout(timer);
+      settle(() => {
+        if (code !== 0) {
+          reject(new Error(`claude CLI exited with code ${code}: ${stderr}`));
+        } else {
+          resolve(stdout.trim());
+        }
+      });
     });
 
-    proc.on("error", (err) => reject(err));
+    proc.on("error", (err) => { clearTimeout(timer); settle(() => reject(err)); });
 
     proc.stdin.write(userMessage);
     proc.stdin.end();
@@ -248,7 +264,32 @@ function extractJson(text: string): any {
     try {
       return JSON.parse(jsonStr);
     } catch {
-      return JSON.parse(repairTruncatedJson(jsonStr));
+      // Try to extract valid JSON by finding balanced structure
+      for (const startChar of ["{", "["]) {
+        const idx = jsonStr.indexOf(startChar);
+        if (idx === -1) continue;
+        const endChar = startChar === "{" ? "}" : "]";
+        let depth = 0, inStr = false, esc = false;
+        for (let i = idx; i < jsonStr.length; i++) {
+          const ch = jsonStr[i];
+          if (esc) { esc = false; continue; }
+          if (ch === "\\") { esc = true; continue; }
+          if (ch === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (ch === startChar) depth++;
+          else if (ch === endChar) {
+            depth--;
+            if (depth === 0) {
+              try { return JSON.parse(jsonStr.substring(idx, i + 1)); } catch { break; }
+            }
+          }
+        }
+      }
+      try {
+        return JSON.parse(repairTruncatedJson(jsonStr));
+      } catch (e) {
+        throw new Error(`Failed to extract JSON from response: ${(e as Error).message}\nOriginal text (first 500 chars): ${text.substring(0, 500)}`);
+      }
     }
   }
 }
@@ -345,7 +386,7 @@ IMPORTANT:
 - pp1875 should reflect any restrictions under ПП 1875 for this item category
 - Return ONLY valid JSON array, no markdown or comments`;
 
-const FORM_ANALYSIS_PROMPT = `You are an expert at filling Russian procurement forms for ИП participants.
+const FORM_ANALYSIS_PROMPT = `You are an expert at filling Russian procurement forms for ИП (individual entrepreneur) participants.
 
 You will receive:
 1. The text content of a form that needs to be filled
@@ -354,14 +395,74 @@ You will receive:
 4. Procurement metadata
 5. Pricing summary
 
-CRITICAL RULES:
+=== CRITICAL GENERAL RULES ===
 - "Итоговая стоимость заявки" = pricing.ourTotalPrice (OUR price), NEVER use НМЦК!
-- НДС is calculated from our total price
+- НДС is calculated from our total price. Our tax system is УСН with 5% НДС.
 - Use profile data EXACTLY as provided
 - For ИП: КПП is empty, write "нет"
-- Replace "(Наименование Участника)" with profile.shortName
+- Wherever the template says "ОГРН" for ИП, replace with "ОГРНИП"
+- ФИО руководителя, ответственного лица, контактного лица = the same ИП data (duplicate it)
+- Факс: у нас нет, оставляем пустым или прочерк
+- Страна происхождения товара по умолчанию: Китай
+- DO NOT change document structure. Only fill in values.
+- Tables must fit on one page — do not add extra rows or make content overflow.
 
-INSTRUCTION TYPES:
+=== FORM-SPECIFIC RULES ===
+
+**Форма 1 (Письмо о подаче оферты):**
+- "Полное наименование Участника" → profile.fullName (e.g. "Индивидуальный предприниматель Болтинов Данил Александрович")
+- "Зарегистрированное по адресу" → profile.legalAddress
+- "Предлагает заключить договор на" → procurement.name (the subject of procurement, e.g. "поставку запчастей для общепромышленного оборудования")
+- Итоговая стоимость → pricing.ourTotalPrice
+
+**Форма 2 (Анкета участника закупки):**
+- The TABLE MUST be fully filled!
+- The table has TWO columns: "Наименование" (left) and "Сведения об участнике закупки" (right)
+- DO NOT put data into the "Наименование" column — it already has labels
+- Put ALL data into the RIGHT column ("Сведения об участнике закупки")
+- REMOVE placeholder text like "указать код", "почтовый индекс" etc and REPLACE with actual data
+- Use "replace" instructions to replace placeholder text in the right column cells with real data
+- Полное наименование: profile.fullName
+- Сокращённое наименование: profile.shortName
+- Виды деятельности (ОКВЭД): profile.okved and any additional codes
+- Юридический адрес = фактический адрес = profile.legalAddress (they are the same for ИП)
+- Телефон: profile.director.phone, Факс: нет
+- Email: profile.director.email
+- ФИО руководителя = profile.director.fio
+- ФИО и контакты ответственного лица = same as руководитель (duplicate)
+
+**Форма 3 (Справка о цепочке собственников):**
+- Keep ONLY 1 row in the ownership table (ИП is the sole owner)
+- The table has MULTIPLE columns (ФИО, ИНН, ОГРНИП, доля, адрес, паспорт, etc.)
+- Fill EACH column with the corresponding data from profile.ownershipChain[0]
+- DO NOT put all data into one column — spread across all columns matching their headers
+- Use fillTable with correct column mapping matching the table headers
+- ОГРН → ОГРНИП everywhere
+- Table MUST fit on 1 page
+
+**Форма 3.1 (Согласие на обработку персональных данных):**
+- Fill all personal data fields from profile
+- ОГРН → ОГРНИП
+
+**Приложение 2.1 (Техническое предложение участника):**
+- This form has a TABLE that MUST be filled with ALL items from the items array!
+- Use fillTable instruction to populate the table. Generate rows for EVERY item.
+- If the template has fewer rows than items, that is OK — fillTable will create new rows from the template.
+- Column mapping for fillTable (use these exact column keys):
+  - "№" → sequential number: 1, 2, 3...
+  - "№ п.п. ТЗ" → same sequential number
+  - "Требуемое Заказчиком" → items[i].name (product name from procurement)
+  - "Предлагаемое Участником" → items[i].ourSpecs or items[i].name (our product from calculation)
+  - "Выполнение" → always "да"
+  - "Пояснения" → always "---"
+  - "Страна происхождения" → "Китай"
+  - "Наименование производителя" → leave empty or from calculation notes
+  - "Цена ед. изм. по оценке Участника, руб. с НДС" → items[i].ourUnitPrice
+  - "Общая сумма по оценке Участника, руб. с НДС" → items[i].ourTotal
+- Do NOT fill "без НДС" columns — only fill "с НДС" columns
+- IMPORTANT: Generate a row for EVERY item, even if there are 60+ items!
+
+=== INSTRUCTION TYPES ===
 
 For DOCX forms:
 {
@@ -379,10 +480,10 @@ For XLSX forms:
   ]
 }
 
-- search string must match EXACTLY what appears in the document
-- ALWAYS fill ALL placeholders
+- search string must match EXACTLY what appears in the document text
+- ALWAYS fill ALL placeholders and table cells
 - ALWAYS generate rows for ALL items
-- Do NOT invent data
+- Do NOT invent data — use only provided profile, pricing, and items data
 - Return ONLY valid JSON`;
 
 const SELF_CHECK_PROMPT = `You previously filled a procurement form. Now verify your work.
@@ -694,70 +795,209 @@ async function processAnalysis(procurementId: string) {
 // ========== FORM FILLING PROCESSOR ==========
 
 // DOCX manipulation helpers
+
+/**
+ * Safe replace inside DOCX XML — only modifies text within <w:t> elements, never touches XML structure.
+ * Handles text split across multiple runs by working at the paragraph level.
+ */
+/**
+ * Safe replace inside DOCX XML — only modifies text within <w:t> elements.
+ * Replaces ALL occurrences in a single pass. Handles text split across runs.
+ * Only modifies the specific <w:t> nodes that overlap with a match.
+ */
+function safeReplaceInXml(docXml: string, search: string, value: string): string {
+  const safeValue = String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const searchXml = search.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  return docXml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paragraph) => {
+    const textNodes: { start: number; end: number; text: string }[] = [];
+    const tRe = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g;
+    let m;
+    while ((m = tRe.exec(paragraph)) !== null) {
+      textNodes.push({
+        start: m.index + m[0].indexOf(">") + 1,
+        end: m.index + m[0].lastIndexOf("<"),
+        text: m[1],
+      });
+    }
+    if (textNodes.length === 0) return paragraph;
+
+    const concatenated = textNodes.map(n => n.text).join("");
+    const useXml = concatenated.indexOf(searchXml) !== -1;
+    const needle = useXml ? searchXml : search;
+
+    // Try exact match first
+    let replaced = concatenated;
+    if (concatenated.indexOf(needle) !== -1) {
+      replaced = concatenated.split(needle).join(safeValue);
+    } else if (/_{3,}/.test(needle)) {
+      // Normalize underscore sequences and try again
+      const normConcat = concatenated.replace(/_{3,}/g, "\x00");
+      const normNeedle = needle.replace(/_{3,}/g, "\x00");
+      if (normConcat.indexOf(normNeedle) === -1) return paragraph;
+      // Debug: log when underscore match is found
+      if (concatenated.includes("____")) console.log(`      🔍 Underscore match in paragraph: "${concatenated.substring(0, 60)}..."`);
+
+      // Build regex from needle where underscore sequences match any number of underscores
+      const regexStr = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/_{3,}/g, "_{1,}");
+      replaced = concatenated.replace(new RegExp(regexStr, "g"), safeValue);
+    } else {
+      return paragraph;
+    }
+
+    if (replaced === concatenated) return paragraph;
+
+    // For underscore-normalized replacements, put all in first node (placeholders are simple)
+    // For exact matches, redistribute preserving node structure
+    const newNodeTexts: string[] = textNodes.map(n => n.text);
+    if (textNodes.length === 1 || /_{3,}/.test(needle)) {
+      // Simple: all text in first node
+      newNodeTexts[0] = replaced;
+      for (let i = 1; i < newNodeTexts.length; i++) newNodeTexts[i] = "";
+    } else {
+      // Exact match: find which nodes overlap with the match and only modify those
+      let matchIdx = concatenated.indexOf(needle);
+      while (matchIdx !== -1) {
+        let charPos = 0;
+        let placed = false;
+        for (let ni = 0; ni < textNodes.length; ni++) {
+          const ns = charPos, ne = charPos + textNodes[ni].text.length;
+          if (ne > matchIdx && ns < matchIdx + needle.length) {
+            const cs = Math.max(0, matchIdx - ns);
+            const ce = Math.min(newNodeTexts[ni].length, matchIdx + needle.length - ns);
+            const before = newNodeTexts[ni].substring(0, cs), after = newNodeTexts[ni].substring(ce);
+            newNodeTexts[ni] = !placed ? before + safeValue + after : before + after;
+            if (!placed) placed = true;
+          }
+          charPos = ne;
+        }
+        // Find next occurrence after this one (in the original concatenated text)
+        matchIdx = concatenated.indexOf(needle, matchIdx + needle.length);
+      }
+    }
+
+    // Apply changes only to nodes whose text actually changed
+    let result = paragraph;
+    let offset = 0;
+    for (let i = 0; i < textNodes.length; i++) {
+      if (newNodeTexts[i] !== textNodes[i].text) {
+        const origStart = textNodes[i].start + offset;
+        const origEnd = textNodes[i].end + offset;
+        result = result.substring(0, origStart) + newNodeTexts[i] + result.substring(origEnd);
+        offset += newNodeTexts[i].length - textNodes[i].text.length;
+      }
+    }
+
+    return result;
+  });
+}
+
 async function applyDocxInstructions(buffer: Buffer, instructions: any[]): Promise<Buffer> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(buffer);
   let docXml = (await zip.file("word/document.xml")?.async("string")) || "";
 
-  // Merge adjacent runs
-  docXml = docXml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paragraph) => {
-    return paragraph.replace(
-      /(<w:r\b[^>]*>[\s\S]*?<\/w:r>)(\s*<w:r\b[^>]*>[\s\S]*?<\/w:r>)+/g,
-      (runSequence) => {
-        const runs = [...runSequence.matchAll(/<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g)];
-        if (runs.length <= 1) return runSequence;
-        const parsed = runs.map((r) => {
-          const rPr = r[1].match(/<w:rPr>([\s\S]*?)<\/w:rPr>/)?.[0] || "";
-          const text = r[1].match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/)?.[1] || "";
-          return { rPr, text };
-        });
-        const merged: typeof parsed = [parsed[0]];
-        for (let i = 1; i < parsed.length; i++) {
-          const last = merged[merged.length - 1];
-          if (parsed[i].rPr === last.rPr) {
-            last.text += parsed[i].text;
-          } else {
-            merged.push(parsed[i]);
-          }
-        }
-        return merged.map((r) => `<w:r>${r.rPr}<w:t xml:space="preserve">${r.text}</w:t></w:r>`).join("");
-      }
-    );
-  });
-
   for (const inst of instructions) {
     if (inst.type === "replace" && inst.search && inst.value != null) {
-      const safeValue = String(inst.value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-      const escaped = inst.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      docXml = docXml.replace(new RegExp(escaped, "g"), safeValue);
+      // Safe replace — only modifies <w:t> content, replaces all occurrences in one pass
+      const beforeLen = docXml.length;
+      docXml = safeReplaceInXml(docXml, inst.search, String(inst.value));
+      if (docXml.length === beforeLen) {
+        // Search might span paragraphs. Try truncating to just the underscore/placeholder part.
+        const lines = inst.search.split("\n");
+        if (lines.length > 1) {
+          // Try just the first line
+          docXml = safeReplaceInXml(docXml, lines[0].trim(), String(inst.value));
+        }
+        if (docXml.length === beforeLen) {
+          // Try extracting just the underscore part
+          const underscoreMatch = inst.search.match(/_{3,}[^_]*/);
+          if (underscoreMatch && underscoreMatch[0] !== inst.search) {
+            docXml = safeReplaceInXml(docXml, underscoreMatch[0].trim(), String(inst.value));
+          }
+        }
+        if (docXml.length === beforeLen) {
+          // Last resort: try each sentence/line fragment separately
+          const fragments = inst.search.split(/[\n\r]+/).map((s: string) => s.trim()).filter((s: string) => s.length > 5);
+          for (const frag of fragments) {
+            const prev = docXml.length;
+            docXml = safeReplaceInXml(docXml, frag, String(inst.value));
+            if (docXml.length !== prev) break; // found one
+          }
+        }
+        if (docXml.length === beforeLen) {
+          console.log(`      ⚠️ НЕ НАЙДЕНО: "${inst.search.substring(0, 60)}..." (len:${inst.search.length})`);
+        }
+      }
     } else if (inst.type === "fillTable" && inst.markerText && Array.isArray(inst.rows)) {
-      docXml = docXml.replace(/<w:tbl\b[^>]*>[\s\S]*?<\/w:tbl>/g, (table) => {
-        if (!table.includes(inst.markerText)) return table;
-        const rowMatches = [...table.matchAll(/<w:tr\b[^>]*>[\s\S]*?<\/w:tr>/g)];
-        if (rowMatches.length < 2) return table;
-        const templateRow = rowMatches[rowMatches.length - 1][0];
+      // Find balanced top-level elements inside XML (handles nesting)
+      const findBalancedElements = (xml: string, tag: string): { start: number; end: number; text: string }[] => {
+        const results: { start: number; end: number; text: string }[] = [];
+        const openRe = new RegExp(`<${tag}\\b`, "g");
+        const closeStr = `</${tag}>`;
+        let m;
+        while ((m = openRe.exec(xml)) !== null) {
+          let depth = 1;
+          let pos = m.index + m[0].length;
+          while (depth > 0 && pos < xml.length) {
+            const nextOpen = xml.indexOf(`<${tag}`, pos);
+            const nextClose = xml.indexOf(closeStr, pos);
+            if (nextClose === -1) break;
+            if (nextOpen !== -1 && nextOpen < nextClose) {
+              depth++;
+              pos = nextOpen + tag.length + 1;
+            } else {
+              depth--;
+              pos = nextClose + closeStr.length;
+            }
+          }
+          if (depth === 0) {
+            results.push({ start: m.index, end: pos, text: xml.substring(m.index, pos) });
+            openRe.lastIndex = pos; // skip past this element
+          }
+        }
+        return results;
+      };
+
+      // Find tables with balanced nesting
+      const tables = findBalancedElements(docXml, "w:tbl");
+      for (let ti = tables.length - 1; ti >= 0; ti--) {
+        const table = tables[ti];
+        if (!table.text.includes(inst.markerText)) continue;
+
+        // Find top-level rows (not nested table rows)
+        const rows = findBalancedElements(table.text, "w:tr");
+        if (rows.length < 2) continue;
+
+        const templateRow = rows[rows.length - 1].text;
         const newRowsXml = inst.rows.map((rowData: any) => {
           let newRow = templateRow;
-          let cellIndex = 0;
-          newRow = newRow.replace(/<w:tc\b[^>]*>[\s\S]*?<\/w:tc>/g, (cell: string) => {
-            const colKey = inst.columns ? inst.columns[cellIndex] : String(cellIndex);
-            cellIndex++;
+          // Replace cell text values using balanced cell matching
+          const cells = findBalancedElements(newRow, "w:tc");
+          // Process cells in reverse order to preserve positions
+          for (let ci = cells.length - 1; ci >= 0; ci--) {
+            const colKey = inst.columns ? inst.columns[ci] : String(ci);
             const value = rowData[colKey] || "";
             const safeVal = String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            return cell.replace(/<w:t[^>]*>[\s\S]*?<\/w:t>/g, `<w:t xml:space="preserve">${safeVal}</w:t>`);
-          });
+            const cellXml = cells[ci].text;
+            const newCellXml = cellXml.replace(/<w:t[^>]*>[\s\S]*?<\/w:t>/g, `<w:t xml:space="preserve">${safeVal}</w:t>`);
+            newRow = newRow.substring(0, cells[ci].start) + newCellXml + newRow.substring(cells[ci].end);
+          }
           return newRow;
         }).join("");
-        const headerRow = rowMatches[0][0];
-        const beforeRows = table.substring(0, table.indexOf(rowMatches[0][0]));
-        const afterRows = table.substring(table.indexOf(rowMatches[rowMatches.length - 1][0]) + rowMatches[rowMatches.length - 1][0].length);
-        return beforeRows + headerRow + newRowsXml + afterRows;
-      });
+
+        const headerRow = rows[0].text;
+        const beforeRows = table.text.substring(0, rows[0].start);
+        const afterRows = table.text.substring(rows[rows.length - 1].end);
+        const newTable = beforeRows + headerRow + newRowsXml + afterRows;
+        docXml = docXml.substring(0, table.start) + newTable + docXml.substring(table.end);
+        break; // only process first matching table
+      }
     }
   }
 
   zip.file("word/document.xml", docXml);
-  const result = await zip.generateAsync({ type: "nodebuffer" });
+  const result = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
   return Buffer.from(result);
 }
 
@@ -783,6 +1023,163 @@ async function applyXlsxInstructions(buffer: Buffer, instructions: any[]): Promi
       }
     }
   }
+
+  const result = await workbook.xlsx.writeBuffer();
+  return Buffer.from(result);
+}
+
+/**
+ * Programmatic filler for XLSX "Ценовое предложение" forms with единый коэффициент снижения.
+ *
+ * Structure: Col 33 = coefficient K, Cols 34-37 = calculated from K.
+ * Detects coefficient column by header text "коэффициент снижения".
+ * Falls back to formula-based detection.
+ */
+async function fillPriceProposalXlsx(buffer: Buffer, contextData: any, profile: any): Promise<Buffer> {
+  const ExcelJS = (await import("exceljs")).default;
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
+  const sheet = workbook.worksheets[0];
+  if (!sheet) throw new Error("No worksheet in price proposal XLSX");
+
+  // Find the header row with column numbers (usually row 13 with "1", "2", "3"...)
+  let headerRow = 0;
+  let coeffCol = 0; // Column with "коэффициент снижения" (usually 33)
+  let participantNameCol = 0; // Column with "предлагаемое Участником" (usually 6)
+
+  // Scan rows 8-15 for header with "коэффициент"
+  for (let r = 8; r <= 15; r++) {
+    for (let c = 1; c <= 40; c++) {
+      const val = String(sheet.getRow(r).getCell(c).value || "").toLowerCase();
+      if (val.includes("коэффициент") && val.includes("сниж")) {
+        coeffCol = c;
+        console.log(`    📌 Найден столбец коэффициента: ${c} (строка ${r})`);
+      }
+      if (val.includes("предлагаемое участником")) {
+        participantNameCol = c;
+      }
+    }
+  }
+
+  // Also find "страна происхождения" and "цена участника с НДС" columns
+  let countryCol = 0;
+  let participantPriceNdsCol = 0; // "Цена ед. изм. по оценке Участника, руб. с НДС"
+  for (let r = 8; r <= 15; r++) {
+    for (let c = 1; c <= 40; c++) {
+      const val = String(sheet.getRow(r).getCell(c).value || "").toLowerCase();
+      if (val.includes("страна происхождения")) countryCol = c;
+      if (val.includes("цена") && val.includes("участник") && val.includes("ндс") && !val.includes("без")) {
+        participantPriceNdsCol = c;
+      }
+    }
+  }
+
+  if (!coeffCol) {
+    console.log("    ⚠️ Столбец коэффициента не найден, пробую Col 33...");
+    coeffCol = 33;
+  }
+  if (participantNameCol) console.log(`    📌 Столбец "Предлагаемое участником": ${participantNameCol}`);
+  if (countryCol) console.log(`    📌 Столбец "Страна происхождения": ${countryCol}`);
+  if (participantPriceNdsCol) console.log(`    📌 Столбец "Цена участника с НДС": ${participantPriceNdsCol}`);
+
+  // Find the numbering row (row with "1", "2", "3"... column numbers)
+  for (let r = 10; r <= 15; r++) {
+    const c1 = sheet.getRow(r).getCell(1).value;
+    const c2 = sheet.getRow(r).getCell(2).value;
+    if (c1 === 1 || c1 === "1") {
+      if (c2 === 2 || c2 === "2") {
+        headerRow = r;
+        break;
+      }
+    }
+  }
+
+  if (!headerRow) {
+    console.log("    ⚠️ Строка нумерации не найдена, пробую 13...");
+    headerRow = 13;
+  }
+
+  // Calculate coefficient K = ourTotalPrice / nmckTotalWithNds
+  const ourTotalPrice = contextData.pricing.ourTotalPrice;
+  const nmckWithNds = contextData.procurement.nmck;
+  const ndsRate = profile.tax.ndsRate;
+
+  // NMCK is with NDS. Our total price is with NDS.
+  const K = nmckWithNds > 0 ? Math.round((ourTotalPrice / nmckWithNds) * 1000000) / 1000000 : 1;
+  console.log(`    💰 Коэффициент K = ${ourTotalPrice} / ${nmckWithNds} = ${K}`);
+
+  if (K <= 0 || K > 1) {
+    console.log(`    ⚠️ Коэффициент K=${K} вне диапазона (0;1], данные калькуляции могут быть неполными`);
+  }
+
+  // Find data rows (rows where Col 1 is a positive number = item index)
+  let filledCount = 0;
+  const colLetter = (c: number) => {
+    let s = "";
+    while (c > 0) { c--; s = String.fromCharCode(65 + (c % 26)) + s; c = Math.floor(c / 26); }
+    return s;
+  };
+  const coeffLetter = colLetter(coeffCol);
+
+  for (let r = headerRow + 1; r <= sheet.rowCount; r++) {
+    const row = sheet.getRow(r);
+    const c1 = row.getCell(1).value;
+
+    // Data rows have numeric item index in column 1
+    if (typeof c1 === "number" && c1 > 0 && c1 < 10000) {
+      // Match item from contextData by index (c1 is 1-based item number)
+      const itemIdx = (c1 as number) - 1;
+      const item = contextData.items[itemIdx];
+
+      // Fill "Предлагаемое участником" from calculation — match by item name to E column
+      if (participantNameCol && item?.name) {
+        // Use our specs if available, otherwise use our item name
+        row.getCell(participantNameCol).value = item.ourSpecs || item.name;
+      }
+
+      // Fill "Страна происхождения" = Китай
+      if (countryCol) {
+        row.getCell(countryCol).value = "Китай";
+      }
+
+      // Fill coefficient
+      row.getCell(coeffCol).value = K;
+
+      // Calculate and fill participant price columns with VALUES (not formulas)
+      // so they display immediately without Excel recalculation
+      const priceNoNdsCol = coeffCol + 1;  // Цена уч. без НДС
+      const priceNdsCol = coeffCol + 2;    // Цена уч. с НДС
+      const totalNoNdsCol = coeffCol + 3;  // Сумма уч. без НДС
+      const totalNdsCol = coeffCol + 4;    // Сумма уч. с НДС
+
+      // Get quantity and Заказчик prices from the row itself
+      const qty = Number(row.getCell(18).value) || 0; // Col R = Итого quantity
+      const priceNoNds = Number(row.getCell(coeffCol - 4).value) || 0; // Col AC = Заказчик без НДС
+      // Price with NDS: use formula result or calculate from priceNoNds
+      let priceNds = 0;
+      const adCell = row.getCell(coeffCol - 3);
+      if (adCell.formula) {
+        priceNds = priceNoNds * 1.2; // Typical 20% NDS markup from Заказчик
+      } else {
+        priceNds = Number(adCell.value) || priceNoNds * 1.2;
+      }
+
+      // Our prices = Заказчик price * K
+      const ourPriceNoNds = Math.round(priceNoNds * K * 100) / 100;
+      const ourPriceNds = Math.round(priceNds * K * 100) / 100;
+      const ourTotalNoNds = Math.round(ourPriceNoNds * qty * 100) / 100;
+      const ourTotalNds = Math.round(ourPriceNds * qty * 100) / 100;
+
+      row.getCell(priceNoNdsCol).value = ourPriceNoNds;
+      row.getCell(priceNdsCol).value = ourPriceNds;
+      row.getCell(totalNoNdsCol).value = ourTotalNoNds;
+      row.getCell(totalNdsCol).value = ourTotalNds;
+
+      filledCount++;
+    }
+  }
+
+  console.log(`    ✅ Заполнено ${filledCount} строк с K=${K}`);
 
   const result = await workbook.xlsx.writeBuffer();
   return Buffer.from(result);
@@ -859,31 +1256,61 @@ async function processFormFilling(procurementId: string, options?: { profileId?:
       const mimeType = form.fileType === "xlsx"
         ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-      const formText = await parseFile(formBuffer, mimeType, form.fileName);
 
-      console.log("    🤖 Получение инструкций заполнения...");
-      const fillResult = await callClaude(
-        FORM_ANALYSIS_PROMPT,
-        `Форма: "${form.name}"\n\nТекст формы:\n${formText}\n\nДанные:\n${JSON.stringify(contextData, null, 2)}`
+      // --- Programmatic fill for XLSX "Ценовое предложение" with единый коэффициент ---
+      const isPriceProposal = form.fileType === "xlsx" && (
+        form.name.includes("Ценовое предложение") || form.name.includes("ценовое предложение")
       );
-      const fillData = extractJson(fillResult);
-      const instructions = fillData.instructions || [];
 
-      if (form.fileType === "docx") formBuffer = await applyDocxInstructions(formBuffer, instructions);
-      else if (form.fileType === "xlsx") formBuffer = await applyXlsxInstructions(formBuffer, instructions);
+      if (isPriceProposal) {
+        console.log("    ⚡ Программное заполнение ценового предложения (без AI)...");
+        formBuffer = await fillPriceProposalXlsx(formBuffer, contextData, profile);
+      } else {
+        const formText = await parseFile(formBuffer, mimeType, form.fileName);
 
-      console.log("    🔍 Проверка заполнения...");
-      const filledText = await parseFile(formBuffer, mimeType, form.fileName);
-      const checkResult = await callClaude(
-        SELF_CHECK_PROMPT,
-        `Исходные данные:\n${JSON.stringify(contextData, null, 2)}\n\nЗаполненная форма "${form.name}":\n${filledText}`
-      );
-      const checkData = extractJson(checkResult);
-      const corrections = checkData.corrections || [];
-      if (corrections.length > 0) {
-        console.log(`    🔧 Применяю ${corrections.length} исправлений...`);
-        if (form.fileType === "docx") formBuffer = await applyDocxInstructions(formBuffer, corrections);
-        else if (form.fileType === "xlsx") formBuffer = await applyXlsxInstructions(formBuffer, corrections);
+        // Trim context for large forms to reduce Claude input size
+        let formContextData = contextData;
+        if (form.fileType === "xlsx" && contextData.items.length > 20) {
+          formContextData = {
+            ...contextData,
+            items: contextData.items.map((item: any) => ({
+              name: item.name, quantity: item.quantity, nmckPrice: item.nmckPrice,
+              ourUnitPrice: item.ourUnitPrice, ourTotal: item.ourTotal,
+            })),
+          };
+        }
+
+        console.log("    🤖 Получение инструкций заполнения...");
+        const userMsg = `Форма: "${form.name}"\n\nТекст формы:\n${formText}\n\nДанные:\n${JSON.stringify(formContextData, null, 2)}`;
+        console.log(`    📊 Размер запроса: ${Math.round(userMsg.length / 1024)}KB`);
+        const fillResult = await callClaude(
+          FORM_ANALYSIS_PROMPT,
+          userMsg
+        );
+        const fillData = extractJson(fillResult);
+        const instructions = fillData.instructions || [];
+        console.log(`    📋 ${instructions.length} инструкций: ${instructions.map((i: any) => i.type + (i.search ? ':"' + i.search.substring(0, 40) + '"' : '')).join(', ')}`);
+
+        if (form.fileType === "docx") formBuffer = await applyDocxInstructions(formBuffer, instructions);
+        else if (form.fileType === "xlsx") formBuffer = await applyXlsxInstructions(formBuffer, instructions);
+
+        console.log("    🔍 Проверка заполнения...");
+        try {
+          const filledText = await parseFile(formBuffer, mimeType, form.fileName);
+          const checkResult = await callClaude(
+            SELF_CHECK_PROMPT,
+            `Исходные данные:\n${JSON.stringify(formContextData, null, 2)}\n\nЗаполненная форма "${form.name}":\n${filledText}`
+          );
+          const checkData = extractJson(checkResult);
+          const corrections = checkData.corrections || [];
+          if (corrections.length > 0) {
+            console.log(`    🔧 Применяю ${corrections.length} исправлений...`);
+            if (form.fileType === "docx") formBuffer = await applyDocxInstructions(formBuffer, corrections);
+            else if (form.fileType === "xlsx") formBuffer = await applyXlsxInstructions(formBuffer, corrections);
+          }
+        } catch (checkErr: any) {
+          console.log(`    ⚠️ Проверка пропущена: ${checkErr.message}`);
+        }
       }
 
       const storageId = await uploadToStorage(formBuffer, mimeType);

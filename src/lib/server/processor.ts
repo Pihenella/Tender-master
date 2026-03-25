@@ -40,6 +40,22 @@ function extractJson(text: string): any {
     match.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t").replace(/[\x00-\x1f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"))
   );
   try { return JSON.parse(s); } catch {}
+  // Try to extract valid JSON by finding balanced structure
+  for (const startChar of ["{", "["]) {
+    const idx = s.indexOf(startChar);
+    if (idx === -1) continue;
+    const endChar = startChar === "{" ? "}" : "]";
+    let depth = 0, inStr2 = false, esc2 = false;
+    for (let i = idx; i < s.length; i++) {
+      const ch = s[i];
+      if (esc2) { esc2 = false; continue; }
+      if (ch === "\\") { esc2 = true; continue; }
+      if (ch === '"') { inStr2 = !inStr2; continue; }
+      if (inStr2) continue;
+      if (ch === startChar) depth++;
+      else if (ch === endChar) { depth--; if (depth === 0) { try { return JSON.parse(s.substring(idx, i + 1)); } catch { break; } } }
+    }
+  }
   // repair truncated
   let r = s.replace(/,\s*"[^"]*$/, "").replace(/,\s*$/, "");
   const stack: string[] = [];
@@ -54,7 +70,9 @@ function extractJson(text: string): any {
     else if (ch === "}" || ch === "]") stack.pop();
   }
   if (inStr) r += '"';
-  return JSON.parse(r + stack.reverse().join(""));
+  try { return JSON.parse(r + stack.reverse().join("")); } catch (e) {
+    throw new Error(`Failed to extract JSON from response: ${(e as Error).message}\nOriginal text (first 500 chars): ${text.substring(0, 500)}`);
+  }
 }
 
 // --- Upload to Convex storage ---

@@ -92,7 +92,32 @@ export function extractJson(text: string): any {
     try {
       return JSON.parse(jsonStr);
     } catch {
-      return JSON.parse(repairTruncatedJson(jsonStr));
+      // Try to extract valid JSON by finding balanced structure
+      for (const startChar of ["{", "["]) {
+        const idx = jsonStr.indexOf(startChar);
+        if (idx === -1) continue;
+        const endChar = startChar === "{" ? "}" : "]";
+        let depth = 0, inStr = false, esc = false;
+        for (let i = idx; i < jsonStr.length; i++) {
+          const ch = jsonStr[i];
+          if (esc) { esc = false; continue; }
+          if (ch === "\\") { esc = true; continue; }
+          if (ch === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (ch === startChar) depth++;
+          else if (ch === endChar) {
+            depth--;
+            if (depth === 0) {
+              try { return JSON.parse(jsonStr.substring(idx, i + 1)); } catch { break; }
+            }
+          }
+        }
+      }
+      try {
+        return JSON.parse(repairTruncatedJson(jsonStr));
+      } catch (e) {
+        throw new Error(`Failed to extract JSON from response: ${(e as Error).message}\nOriginal text (first 500 chars): ${text.substring(0, 500)}`);
+      }
     }
   }
 }

@@ -9,7 +9,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "process": "npx tsx scripts/local-processor.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

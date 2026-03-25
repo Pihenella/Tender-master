@@ -51,10 +51,15 @@ export function ProcurementCard({
         </p>
       </Link>
       <button
-        onClick={(e) => {
+        onClick={async (e) => {
           e.preventDefault();
+          e.stopPropagation();
           if (confirm("Удалить закупку и все связанные файлы?")) {
-            remove({ id });
+            try {
+              await remove({ id });
+            } catch (err) {
+              alert("Ошибка удаления: " + (err as Error).message);
+            }
           }
         }}
         className="mt-2 text-xs text-red-500 hover:text-red-700"

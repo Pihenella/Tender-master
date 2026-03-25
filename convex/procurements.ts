@@ -84,7 +84,7 @@ export const remove = mutation({
       .withIndex("by_procurement", (q) => q.eq("procurementId", args.id))
       .collect();
     for (const file of files) {
-      await ctx.storage.delete(file.storageId);
+      try { await ctx.storage.delete(file.storageId); } catch {}
       await ctx.db.delete(file._id);
     }
 
@@ -101,7 +101,7 @@ export const remove = mutation({
       .withIndex("by_procurement", (q) => q.eq("procurementId", args.id))
       .collect();
     for (const form of extractedForms) {
-      await ctx.storage.delete(form.storageId);
+      try { await ctx.storage.delete(form.storageId); } catch {}
       await ctx.db.delete(form._id);
     }
 
@@ -118,7 +118,7 @@ export const remove = mutation({
       .withIndex("by_procurement", (q) => q.eq("procurementId", args.id))
       .collect();
     for (const gf of genFiles) {
-      await ctx.storage.delete(gf.storageId);
+      try { await ctx.storage.delete(gf.storageId); } catch {}
       await ctx.db.delete(gf._id);
     }
 
@@ -145,6 +145,20 @@ export const cancelOperation = mutation({
         progress: 0,
       });
     }
+  },
+});
+
+export const setFillParams = mutation({
+  args: {
+    id: v.id("procurements"),
+    fillProfileId: v.optional(v.string()),
+    fillFormIds: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, {
+      fillProfileId: args.fillProfileId,
+      fillFormIds: args.fillFormIds,
+    });
   },
 });
 

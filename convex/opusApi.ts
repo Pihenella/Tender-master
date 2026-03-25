@@ -1,7 +1,7 @@
 "use node";
 
-const POLZA_BASE_URL = "https://polza.ai/api/v1";
-const OPUS_MODEL = "anthropic/claude-opus-4.6";
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const MODEL = "claude-sonnet-4-20250514";
 
 export async function callOpus(
   systemPrompt: string,
@@ -9,20 +9,21 @@ export async function callOpus(
   maxTokens = 16384,
   maxRetries = 3
 ): Promise<string> {
-  const apiKey = process.env.POLZA_API_KEY;
-  if (!apiKey) throw new Error("POLZA_API_KEY is not set");
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const res = await fetch(`${POLZA_BASE_URL}/chat/completions`, {
+    const res = await fetch(ANTHROPIC_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: OPUS_MODEL,
+        model: MODEL,
+        system: systemPrompt,
         messages: [
-          { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
         max_tokens: maxTokens,
@@ -30,7 +31,7 @@ export async function callOpus(
       }),
     });
 
-    if (res.status === 429) {
+    if (res.status === 429 || res.status === 529) {
       const waitMs = 30000 * (attempt + 1);
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
@@ -38,15 +39,15 @@ export async function callOpus(
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Polza API ${res.status}: ${errText}`);
+      throw new Error(`Anthropic API ${res.status}: ${errText}`);
     }
 
     const data = await res.json();
-    const content = data.choices?.[0]?.message?.content || "";
-    if (!content) throw new Error("Empty response from Opus");
+    const content = data.content?.[0]?.text || "";
+    if (!content) throw new Error("Empty response from Claude");
     return content;
   }
-  throw new Error("Polza API: max retries exceeded");
+  throw new Error("Anthropic API: max retries exceeded");
 }
 
 function repairTruncatedJson(text: string): string {

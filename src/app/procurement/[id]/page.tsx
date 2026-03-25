@@ -38,7 +38,7 @@ export default function ProcurementPage({
 
   const analyzeDocuments = useAction(api.analysis.analyzeDocuments);
   const parseCalculation = useAction(api.calculationUpload.parseCalculation);
-  const fillForms = useAction(api.formFilling.fillForms);
+  const fillFormsAction = useAction(api.formFilling.fillForms);
   const cancelOperation = useMutation(api.procurements.cancelOperation);
 
   const [profileId, setProfileId] = useState<ProfileId>("pikhenek");
@@ -60,9 +60,26 @@ export default function ProcurementPage({
     [parseCalculation, procurementId]
   );
 
-  const handleFillForms = useCallback(async () => {
-    await fillForms({ procurementId });
-  }, [fillForms, procurementId]);
+  const [selectedFormIds, setSelectedFormIds] = useState<Set<string>>(new Set());
+
+  const handleFillForms = useCallback(async (formIds?: string[]) => {
+    await fillFormsAction({ procurementId, profileId, formIds });
+  }, [fillFormsAction, procurementId, profileId]);
+
+  const handleFillSelected = useCallback(async () => {
+    if (selectedFormIds.size === 0) return;
+    await handleFillForms(Array.from(selectedFormIds));
+    setSelectedFormIds(new Set());
+  }, [selectedFormIds, handleFillForms]);
+
+  const toggleFormSelection = useCallback((formId: string) => {
+    setSelectedFormIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(formId)) next.delete(formId);
+      else next.add(formId);
+      return next;
+    });
+  }, []);
 
   const handleCancel = useCallback(async () => {
     await cancelOperation({ id: procurementId });
@@ -278,13 +295,57 @@ export default function ProcurementPage({
           <div className="bg-white rounded-lg border p-6">
             <h3 className="font-semibold mb-4">Этап 3: Заполнение форм</h3>
 
-            <button
-              onClick={handleFillForms}
-              disabled={isFilling}
-              className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
-            >
-              {isFilling ? "Заполнение..." : isCompleted ? "Перезаполнить формы" : "Заполнить формы"}
-            </button>
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => handleFillForms()}
+                disabled={isFilling}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+              >
+                {isFilling ? "Заполнение..." : isCompleted ? "Перезаполнить все" : "Заполнить формы"}
+              </button>
+              {selectedFormIds.size > 0 && !isFilling && (
+                <button
+                  onClick={handleFillSelected}
+                  className="bg-orange-500 text-white px-6 py-2 rounded-lg text-sm hover:bg-orange-600"
+                >
+                  Перезаполнить выбранные ({selectedFormIds.size})
+                </button>
+              )}
+            </div>
+
+            <p className="text-xs text-muted-foreground mb-3">
+              Профиль: <span className="font-medium">{profileId === "boltinov" ? "ИП Болтинов Д.А." : "ИП Пихенек Ю.Д."}</span> (смена в шапке)
+            </p>
+
+            {extractedForms && extractedForms.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-sm font-medium mb-2">Формы для заполнения:</h4>
+                <div className="space-y-1">
+                  {extractedForms.map((form) => {
+                    const filled = filledForms?.find((f) => f.formType === form.name);
+                    return (
+                      <label
+                        key={form._id}
+                        className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedFormIds.has(form._id)}
+                          onChange={() => toggleFormSelection(form._id)}
+                          className="rounded"
+                        />
+                        <span className="text-sm flex-1">{form.name}</span>
+                        {filled && (
+                          <span className="text-xs text-green-600">
+                            {filled.profileId === "boltinov" ? "Болтинов" : "Пихенек"}
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {filledForms && filledForms.length > 0 && (
               <div className="mt-4">

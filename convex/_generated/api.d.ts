@@ -20,6 +20,7 @@ import type * as formFilling from "../formFilling.js";
 import type * as formFillingActions from "../formFillingActions.js";
 import type * as googleDrive from "../googleDrive.js";
 import type * as http from "../http.js";
+import type * as localApi from "../localApi.js";
 import type * as logistics from "../logistics.js";
 import type * as opusApi from "../opusApi.js";
 import type * as procurements from "../procurements.js";
@@ -43,6 +44,7 @@ declare const fullApi: ApiFromModules<{
   formFillingActions: typeof formFillingActions;
   googleDrive: typeof googleDrive;
   http: typeof http;
+  localApi: typeof localApi;
   logistics: typeof logistics;
   opusApi: typeof opusApi;
   procurements: typeof procurements;

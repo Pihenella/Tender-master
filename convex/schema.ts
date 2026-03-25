@@ -26,7 +26,10 @@ export default defineSchema({
     progress: v.optional(v.number()),
     profileId: v.union(v.literal("boltinov"), v.literal("pikhenek")),
     driveFolderId: v.optional(v.string()),
-    // Legacy fields from local processor era
+    // Local processor params
+    fillProfileId: v.optional(v.string()),
+    fillFormIds: v.optional(v.array(v.string())),
+    // Legacy fields
     processingMode: v.optional(v.string()),
     localStatusUpdatedAt: v.optional(v.number()),
     localRetryCount: v.optional(v.number()),

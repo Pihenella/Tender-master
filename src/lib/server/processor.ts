@@ -60,7 +60,7 @@ function extractJson(text: string): any {
 // --- Upload to Convex storage ---
 async function uploadToStorage(client: ConvexHttpClient, buffer: Buffer, contentType: string): Promise<string> {
   const url = await client.mutation(api.files.generateUploadUrl, {});
-  const res = await fetch(url, { method: "POST", headers: { "Content-Type": contentType }, body: buffer });
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": contentType }, body: new Uint8Array(buffer) });
   const { storageId } = await res.json();
   return storageId;
 }

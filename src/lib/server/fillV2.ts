@@ -200,7 +200,7 @@ export async function applyXlsxV2(
   buffer: Buffer,
   cellValues: CellValue[],
   tableData?: ResolveResult["tableData"]
-): Promise<Buffer> {
+): Promise<Buffer<ArrayBuffer>> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
   const ws = wb.worksheets[0];
@@ -228,7 +228,7 @@ export async function applyXlsxV2(
     }
   }
 
-  return Buffer.from(await wb.xlsx.writeBuffer());
+  return Buffer.from(await wb.xlsx.writeBuffer()) as Buffer<ArrayBuffer>;
 }
 
 // ─── selfCheck ───────────────────────────────────────────────────────

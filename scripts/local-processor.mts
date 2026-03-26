@@ -3,18 +3,15 @@
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { spawn } from "child_process";
-import mammoth from "mammoth";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
+import { buildFormMap } from "../src/lib/server/formMap.js";
+import { resolveMapping, applyXlsxV2, selfCheck } from "../src/lib/server/fillV2.js";
+import type { ClaudeMapping } from "../src/lib/server/fillV2.js";
 
 const api = anyApi as any;
 
 // --- Inline parsers (avoid import issues) ---
-async function parseDocx(buffer: Buffer): Promise<string> {
-  const result = await mammoth.extractRawText({ buffer });
-  return result.value;
-}
-
 async function parseDocxWithBlocks(buffer: Buffer): Promise<string> {
   const zip = await JSZip.loadAsync(buffer);
   const docXml = await zip.file("word/document.xml")?.async("string");
@@ -79,7 +76,7 @@ async function parsePdf(buffer: Buffer): Promise<string> {
 
 async function parseFile(buffer: Buffer, mimeType: string, fileName: string): Promise<string> {
   const ext = fileName.split(".").pop()?.toLowerCase();
-  if (ext === "docx" || mimeType.includes("wordprocessingml")) return parseDocx(buffer);
+  if (ext === "docx" || mimeType.includes("wordprocessingml")) return parseDocxWithBlocks(buffer);
   if (ext === "xlsx" || mimeType.includes("spreadsheetml")) return parseXlsx(buffer);
   if (ext === "pdf" || mimeType === "application/pdf") return parsePdf(buffer);
   return `[Unsupported file type: ${ext}]`;
@@ -503,6 +500,54 @@ Return JSON:
 
 If no corrections needed, return empty corrections array.
 Return ONLY valid JSON`;
+
+const FORM_MAP_PROMPT = `You analyze Russian procurement form structures and map data fields to cells.
+
+You receive:
+1. A structured form map with regions (headers, fields with label+input cells, tables, static text)
+2. Available data: profile (company info), pricing (totals), items (procurement items)
+
+Your task: determine which data field goes into each input cell.
+
+=== CRITICAL RULES ===
+- "Итоговая стоимость" = pricing.ourTotalPrice (OUR price), NEVER НМЦК!
+- For ИП: КПП = "нет (ИП)"
+- Use profile data EXACTLY
+- ОГРН → ОГРНИП for ИП
+
+=== DATA PATHS ===
+Profile fields: profile.fullName, profile.shortName, profile.inn, profile.ogrn, profile.okpo, profile.kpp, profile.oktmo, profile.okved, profile.legalAddress, profile.mailingAddress, profile.actualAddress
+Bank: profile.bank.name, profile.bank.bic, profile.bank.account, profile.bank.corrAccount
+Director: profile.director.fio, profile.director.fioShort, profile.director.position, profile.director.phone, profile.director.email
+Passport: profile.passport.series, profile.passport.number, profile.passport.issueDate, profile.passport.issuedBy, profile.passport.departmentCode
+Registration: profile.registration.ogrnDate, profile.registration.ogrnRecord
+Tax: profile.tax.system, profile.tax.ndsRate, profile.tax.ndsLabel
+Procurement: procurement.number, procurement.name, procurement.nmck, procurement.deliveryDeadline
+Pricing: pricing.ourTotalPrice, pricing.ndsRate, pricing.ndsAmount, pricing.ndsLabel
+Items array: items[].name, items[].quantity, items[].nmckPrice, items[].ourUnitPrice, items[].ourTotal, items[].ourSpecs, items[].notes
+
+Return ONLY valid JSON:
+{
+  "mappings": [
+    {"cell": "B5", "dataPath": "profile.inn", "confidence": "high"}
+  ],
+  "tables": [
+    {
+      "dataStartRow": 11,
+      "columnMap": {
+        "A": "rowNumber",
+        "B": "items[].name",
+        "C": "items[].quantity"
+      }
+    }
+  ],
+  "unmapped": ["D15"],
+  "computed": [
+    {"cell": "E20", "expression": "SUM", "label": "Итого"}
+  ]
+}
+
+Confidence: high = exact match, medium = likely but ambiguous, low = uncertain.`;
 
 // ========== ANALYSIS PROCESSOR ==========
 
@@ -1185,7 +1230,7 @@ async function fillPriceProposalXlsx(buffer: Buffer, contextData: any, profile: 
   return Buffer.from(result);
 }
 
-async function processFormFilling(procurementId: string, options?: { profileId?: string; formIds?: string[] }) {
+async function processFormFilling(procurementId: string, options?: { profileId?: string; formIds?: string[]; fillEngine?: "v1" | "v2" }) {
   console.log(`\n📝 Начинаю заполнение форм для закупки ${procurementId}...`);
 
   try {
@@ -1265,7 +1310,70 @@ async function processFormFilling(procurementId: string, options?: { profileId?:
       if (isPriceProposal) {
         console.log("    ⚡ Программное заполнение ценового предложения (без AI)...");
         formBuffer = await fillPriceProposalXlsx(formBuffer, contextData, profile);
+      } else if (options?.fillEngine === "v2" && form.fileType === "xlsx") {
+        // === V2 PIPELINE ===
+        console.log("    🆕 V2: Построение карты формы...");
+        const formMap = await buildFormMap(formBuffer);
+        console.log(`    📊 V2: ${formMap.regions.length} регионов (${formMap.regions.filter((r: any) => r.type === "field").length} полей, ${formMap.regions.filter((r: any) => r.type === "table").length} таблиц)`);
+
+        console.log("    🤖 V2: Маппинг полей...");
+        const mapPrompt = `Форма: "${form.name}"\n\nСтруктура формы:\n${JSON.stringify(formMap, null, 2)}\n\nДанные:\n${JSON.stringify(contextData, null, 2)}`;
+        const mapResult = await callClaude(FORM_MAP_PROMPT, mapPrompt);
+        const mapping = extractJson(mapResult) as ClaudeMapping;
+        console.log(`    📋 V2: ${mapping.mappings?.length || 0} маппингов, ${mapping.tables?.length || 0} таблиц, ${mapping.unmapped?.length || 0} без маппинга`);
+
+        const safeMapping: ClaudeMapping = {
+          mappings: mapping.mappings || [],
+          tables: mapping.tables || [],
+          unmapped: mapping.unmapped || [],
+          computed: mapping.computed || [],
+        };
+
+        console.log("    ⚙️ V2: Подстановка значений...");
+        const resolved = resolveMapping(safeMapping, contextData);
+        console.log(`    ✏️ V2: ${resolved.cellValues.length} ячеек, ${resolved.tableData.reduce((s: number, t: any) => s + t.rows.length, 0)} строк таблиц, ${resolved.unresolved.length} не разрешено`);
+
+        if (resolved.unresolved.length > 0) {
+          console.log(`    🤖 V2: Разрешение ${resolved.unresolved.length} неизвестных полей...`);
+          const unresolvedPrompt = `Эти ячейки формы "${form.name}" остались без данных: ${resolved.unresolved.join(", ")}.\n\nКарта формы:\n${JSON.stringify(formMap.regions.filter((r: any) => r.type === "field" && resolved.unresolved.includes(r.input?.cell)), null, 2)}\n\nДанные:\n${JSON.stringify(contextData, null, 2)}\n\nВерни JSON: {"cells": [{"cell": "B5", "value": "значение"}]}`;
+          try {
+            const unresolvedResult = await callClaude(FORM_MAP_PROMPT, unresolvedPrompt);
+            const extra = extractJson(unresolvedResult);
+            if (extra.cells && Array.isArray(extra.cells)) {
+              for (const c of extra.cells) {
+                if (c.cell && c.value !== undefined) {
+                  resolved.cellValues.push({ cell: c.cell, value: c.value });
+                }
+              }
+            }
+          } catch (e: any) {
+            console.log(`    ⚠️ V2: Не удалось разрешить: ${e.message}`);
+          }
+        }
+
+        formBuffer = await applyXlsxV2(formBuffer, resolved.cellValues, resolved.tableData);
+
+        console.log("    🔍 V2: Проверка заполнения...");
+        const checkResult = await selfCheck(formBuffer, resolved.cellValues, formMap);
+        console.log(`    📊 V2: Заполнено ${checkResult.applied}/${checkResult.applied + checkResult.failed}, пропущено ${checkResult.missing}`);
+
+        if (checkResult.failed > 0) {
+          console.log(`    🔧 V2: Retry для ${checkResult.failed} ошибок...`);
+          const retryValues: Array<{ cell: string; value: string | number }> = [];
+          for (const detail of checkResult.details) {
+            if (detail.reason === "merged_cell" || detail.reason === "write_failed") {
+              retryValues.push({ cell: detail.cell, value: detail.expected });
+            }
+          }
+          if (retryValues.length > 0) {
+            formBuffer = await applyXlsxV2(formBuffer, retryValues);
+          }
+        }
+
+        console.log(`    ✅ V2: Итог — ${checkResult.applied} ок, ${checkResult.failed} ошибок, ${checkResult.missing} пропущено`);
+
       } else {
+        // === V1 PIPELINE (original) ===
         const formText = await parseFile(formBuffer, mimeType, form.fileName);
 
         // Trim context for large forms to reduce Claude input size
@@ -1347,6 +1455,7 @@ async function poll() {
       await processFormFilling(p._id as string, {
         profileId: p.fillProfileId || undefined,
         formIds: p.fillFormIds || undefined,
+        fillEngine: (p.fillEngine as "v1" | "v2") || "v1",
       });
     }
   }

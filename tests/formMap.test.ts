@@ -92,6 +92,29 @@ describe("buildFormMap", () => {
     );
   });
 
+  it("counts existing data rows in tables", async () => {
+    const buf = await makeBuffer((ws) => {
+      ws.getCell("A1").value = "№";
+      ws.getCell("B1").value = "Товар";
+      ws.getCell("C1").value = "Цена";
+      // Two data rows
+      ws.getCell("A2").value = "1";
+      ws.getCell("B2").value = "Товар 1";
+      ws.getCell("C2").value = "100";
+      ws.getCell("A3").value = "2";
+      ws.getCell("B3").value = "Товар 2";
+      ws.getCell("C3").value = "200";
+      // Row 4 empty
+    });
+
+    const map = await buildFormMap(buf);
+    const table = map.regions.find((r) => r.type === "table");
+    expect(table).toBeDefined();
+    if (table && table.type === "table") {
+      expect(table.existingRows).toBe(2);
+    }
+  });
+
   it("returns static regions for standalone text", async () => {
     const buf = await makeBuffer((ws) => {
       // Cells with non-empty neighbors to the right are not field pairs

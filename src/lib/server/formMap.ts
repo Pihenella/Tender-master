@@ -40,6 +40,14 @@ function cellValue(cell: ExcelJS.Cell): string {
   return String(v);
 }
 
+function colNumber(letters: string): number {
+  let result = 0;
+  for (let i = 0; i < letters.length; i++) {
+    result = result * 26 + (letters.charCodeAt(i) - 64);
+  }
+  return result;
+}
+
 function colLetter(colNumber: number): string {
   let result = "";
   let n = colNumber;
@@ -80,8 +88,8 @@ export async function buildFormMap(buffer: Buffer): Promise<FormMap> {
       if (startMatch && endMatch) {
         for (let r = parseInt(startMatch[2]); r <= parseInt(endMatch[2]); r++) {
           for (
-            let c = startMatch[1].charCodeAt(0) - 64;
-            c <= endMatch[1].charCodeAt(0) - 64;
+            let c = colNumber(startMatch[1]);
+            c <= colNumber(endMatch[1]);
             c++
           ) {
             classified.add(`${colLetter(c)}${r}`);

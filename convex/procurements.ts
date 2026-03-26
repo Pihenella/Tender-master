@@ -153,11 +153,13 @@ export const setFillParams = mutation({
     id: v.id("procurements"),
     fillProfileId: v.optional(v.string()),
     fillFormIds: v.optional(v.array(v.string())),
+    fillEngine: v.optional(v.union(v.literal("v1"), v.literal("v2"))),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.id, {
       fillProfileId: args.fillProfileId,
       fillFormIds: args.fillFormIds,
+      fillEngine: args.fillEngine,
     });
   },
 });

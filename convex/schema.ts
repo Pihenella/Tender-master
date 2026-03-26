@@ -29,6 +29,7 @@ export default defineSchema({
     // Local processor params
     fillProfileId: v.optional(v.string()),
     fillFormIds: v.optional(v.array(v.string())),
+    fillEngine: v.optional(v.union(v.literal("v1"), v.literal("v2"))),
     // Legacy fields
     processingMode: v.optional(v.string()),
     localStatusUpdatedAt: v.optional(v.number()),

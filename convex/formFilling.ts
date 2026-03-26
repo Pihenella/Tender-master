@@ -9,6 +9,7 @@ export const fillForms = action({
     procurementId: v.id("procurements"),
     profileId: v.optional(v.string()),
     formIds: v.optional(v.array(v.string())),
+    fillEngine: v.optional(v.union(v.literal("v1"), v.literal("v2"))),
   },
   handler: async (ctx, args) => {
     const extractedForms = await ctx.runQuery(api.files.getExtractedForms, {
@@ -30,6 +31,7 @@ export const fillForms = action({
       id: args.procurementId,
       fillProfileId: args.profileId,
       fillFormIds: args.formIds,
+      fillEngine: args.fillEngine,
     });
 
     await ctx.runMutation(api.procurements.updateStatus, {

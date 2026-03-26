@@ -97,6 +97,36 @@ describe("resolveMapping", () => {
     expect(result.unresolved).toContain("C5");
   });
 
+  it("resolves rowNumber columns with sequential 1-based numbers", () => {
+    const mapping: ClaudeMapping = {
+      mappings: [],
+      tables: [
+        {
+          dataStartRow: 5,
+          columnMap: { A: "rowNumber", B: "items[].name", C: "items[].quantity" },
+        },
+      ],
+      unmapped: [],
+      computed: [],
+    };
+    const context = {
+      items: [
+        { name: "Болт М6", quantity: 100 },
+        { name: "Гайка М6", quantity: 200 },
+        { name: "Шайба М6", quantity: 300 },
+      ],
+    };
+
+    const result = resolveMapping(mapping, context);
+
+    expect(result.tableData).toHaveLength(1);
+    expect(result.tableData[0].rows).toEqual([
+      { A: 1, B: "Болт М6", C: 100 },
+      { A: 2, B: "Гайка М6", C: 200 },
+      { A: 3, B: "Шайба М6", C: 300 },
+    ]);
+  });
+
   it("marks mappings with missing data as unresolved", () => {
     const mapping: ClaudeMapping = {
       mappings: [
@@ -229,5 +259,29 @@ describe("selfCheck", () => {
     expect(check.applied).toBe(1);
     expect(check.missing).toBeGreaterThan(0);
     expect(check.details.some((d) => d.cell === "B2" && d.reason === "unmapped")).toBe(true);
+  });
+
+  it("correctly checks values in merged cells", async () => {
+    const buf = await makeBuffer((ws) => {
+      ws.mergeCells("B1:D1");
+      ws.getCell("A1").value = "ИНН";
+      ws.getCell("B1").value = "";
+    });
+
+    const cellValues: CellValue[] = [{ cell: "B1", value: "662302062065" }];
+    const filled = await applyXlsxV2(buf, cellValues);
+
+    const { buildFormMap } = await import("../src/lib/server/formMap");
+    const formMap = await buildFormMap(buf);
+
+    // Check with the exact cell address that was targeted
+    const check = await selfCheck(filled, cellValues, formMap);
+    expect(check.applied).toBe(1);
+    expect(check.failed).toBe(0);
+
+    // Also check with a cell address inside the merged range
+    const check2 = await selfCheck(filled, [{ cell: "C1", value: "662302062065" }], formMap);
+    expect(check2.applied).toBe(1);
+    expect(check2.failed).toBe(0);
   });
 });

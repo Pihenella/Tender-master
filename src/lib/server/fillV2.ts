@@ -157,9 +157,14 @@ export function resolveMapping(
 
     // Resolve all column arrays
     const resolved: Record<string, any[]> = {};
+    const rowNumberCols: string[] = [];
     let maxLen = 0;
-    for (const [col, path] of columns) {
-      const values = resolveArrayPath(context, path);
+    for (const [col, dataPath] of columns) {
+      if (dataPath === "rowNumber") {
+        rowNumberCols.push(col);
+        continue;
+      }
+      const values = resolveArrayPath(context, dataPath);
       resolved[col] = values;
       if (values.length > maxLen) maxLen = values.length;
     }
@@ -168,8 +173,12 @@ export function resolveMapping(
     for (let i = 0; i < maxLen; i++) {
       const row: Record<string, string | number> = {};
       for (const [col] of columns) {
-        const val = resolved[col]?.[i];
-        row[col] = val !== undefined && val !== null ? val : "";
+        if (rowNumberCols.includes(col)) {
+          row[col] = i + 1;
+        } else {
+          const val = resolved[col]?.[i];
+          row[col] = val !== undefined && val !== null ? val : "";
+        }
       }
       rows.push(row);
     }
@@ -248,11 +257,14 @@ export async function selfCheck(
   let failed = 0;
   const details: CheckResult["details"] = [];
 
+  const merges = (ws.model.merges as string[]) || [];
+
   // Check expected values
   const filledCells = new Set<string>();
   for (const { cell, value } of expectedValues) {
     filledCells.add(cell);
-    const actual = cellValueToString(ws.getCell(cell).value);
+    const resolvedAddr = masterCell(merges, cell);
+    const actual = cellValueToString(ws.getCell(resolvedAddr).value);
     const expected = String(value);
 
     if (actual === expected) {
@@ -263,7 +275,7 @@ export async function selfCheck(
         cell,
         expected,
         actual,
-        reason: "write_failed",
+        reason: resolvedAddr !== cell ? "merged_cell" : "write_failed",
       });
     }
   }

@@ -1288,6 +1288,9 @@ async function processFormFilling(procurementId: string, options?: { profileId?:
       await client.mutation(api.localApi.clearGeneratedFilesExceptCalculation, { procurementId });
     }
 
+    // Collect V2 check results for confidence report
+    const v2Reports: Array<{ formName: string; fields: any[]; warnings: string[] }> = [];
+
     for (let i = 0; i < formsToFill.length; i++) {
       const form = formsToFill[i];
       if (!form.url) continue;
@@ -1372,6 +1375,26 @@ async function processFormFilling(procurementId: string, options?: { profileId?:
 
         console.log(`    ✅ V2: Итог — ${checkResult.applied} ок, ${checkResult.failed} ошибок, ${checkResult.missing} пропущено`);
 
+        // Collect V2 report for UI
+        const formFields = resolved.cellValues.map(cv => {
+          const region = formMap.regions.find((r: any) => r.type === "field" && r.input?.cell === cv.cell);
+          const label = region && region.type === "field" ? region.label.value : cv.cell;
+          const failed = checkResult.details.find(d => d.cell === cv.cell);
+          return {
+            field: label,
+            value: String(cv.value),
+            confidence: failed ? "low" : "high",
+            note: failed ? `${failed.reason}: получено "${failed.actual}"` : undefined,
+          };
+        });
+        const warnings: string[] = [];
+        for (const d of checkResult.details.filter(d => d.reason === "unmapped")) {
+          const region = formMap.regions.find((r: any) => r.type === "field" && r.input?.cell === d.cell);
+          const label = region && region.type === "field" ? region.label.value : d.cell;
+          warnings.push(`Поле "${label}" (${d.cell}) не заполнено`);
+        }
+        v2Reports.push({ formName: form.name, fields: formFields, warnings });
+
       } else {
         // === V1 PIPELINE (original) ===
         const formText = await parseFile(formBuffer, mimeType, form.fileName);
@@ -1431,6 +1454,21 @@ async function processFormFilling(procurementId: string, options?: { profileId?:
       });
 
       console.log(`    ✅ Форма заполнена!`);
+    }
+
+    // Save V2 confidence report if we have any
+    if (v2Reports.length > 0) {
+      const reportJson = JSON.stringify(v2Reports);
+      const reportBuffer = Buffer.from(reportJson, "utf-8");
+      const reportStorageId = await uploadToStorage(reportBuffer, "application/json");
+      await client.mutation(api.files.saveGeneratedFile, {
+        procurementId,
+        profileId: activeProfileId,
+        storageId: reportStorageId,
+        fileName: "v2-confidence-report.json",
+        formType: "confidenceReport",
+      });
+      console.log(`  📊 V2: Отчёт проверки сохранён (${v2Reports.length} форм)`);
     }
 
     await updateProgress(procurementId, "completed", `Заполнено ${formsToFill.length} форм`, 100);

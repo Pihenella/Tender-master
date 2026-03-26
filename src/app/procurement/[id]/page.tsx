@@ -42,6 +42,7 @@ export default function ProcurementPage({
   const cancelOperation = useMutation(api.procurements.cancelOperation);
 
   const [profileId, setProfileId] = useState<ProfileId>("pikhenek");
+  const [fillEngine, setFillEngine] = useState<"v1" | "v2">("v1");
   const [analyzing, setAnalyzing] = useState(false);
 
   const handleAnalyze = useCallback(async () => {
@@ -63,8 +64,8 @@ export default function ProcurementPage({
   const [selectedFormIds, setSelectedFormIds] = useState<Set<string>>(new Set());
 
   const handleFillForms = useCallback(async (formIds?: string[]) => {
-    await fillFormsAction({ procurementId, profileId, formIds });
-  }, [fillFormsAction, procurementId, profileId]);
+    await fillFormsAction({ procurementId, profileId, formIds, fillEngine });
+  }, [fillFormsAction, procurementId, profileId, fillEngine]);
 
   const handleFillSelected = useCallback(async () => {
     if (selectedFormIds.size === 0) return;
@@ -294,6 +295,32 @@ export default function ProcurementPage({
         {hasCalculation && (
           <div className="bg-white rounded-lg border p-6">
             <h3 className="font-semibold mb-4">Этап 3: Заполнение форм</h3>
+
+            <div className="flex items-center gap-3 mb-3 text-sm">
+              <span className="text-gray-500">Движок:</span>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  name="fillEngine"
+                  value="v1"
+                  checked={fillEngine === "v1"}
+                  onChange={() => setFillEngine("v1")}
+                  className="accent-blue-600"
+                />
+                V1
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  name="fillEngine"
+                  value="v2"
+                  checked={fillEngine === "v2"}
+                  onChange={() => setFillEngine("v2")}
+                  className="accent-blue-600"
+                />
+                V2 (эксп.)
+              </label>
+            </div>
 
             <div className="flex gap-2 mb-4">
               <button

@@ -1,9 +1,11 @@
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { spawn } from "child_process";
-import mammoth from "mammoth";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
+import { buildFormMap } from "./formMap";
+import { resolveMapping, applyXlsxV2, selfCheck } from "./fillV2";
+import type { ClaudeMapping } from "./fillV2";
 
 const api = anyApi as any;
 
@@ -116,7 +118,7 @@ async function parseDocxBlocks(buffer: Buffer): Promise<string> {
 async function parseFileContent(buffer: Buffer, mimeType: string, fileName: string): Promise<string> {
   const ext = fileName.split(".").pop()?.toLowerCase();
   if (ext === "docx" || mimeType.includes("wordprocessingml")) {
-    return (await mammoth.extractRawText({ buffer })).value;
+    return parseDocxBlocks(buffer);
   }
   if (ext === "xlsx" || mimeType.includes("spreadsheetml")) {
     const wb = new ExcelJS.Workbook();
@@ -365,6 +367,54 @@ const CHECK_PROMPT = `Verify filled form against source data. Return JSON:
 {"corrections": [{"type": "replace", "search": "wrong", "value": "correct"}]}
 Empty corrections if all correct. Return ONLY valid JSON.`;
 
+const FORM_MAP_PROMPT = `You analyze Russian procurement form structures and map data fields to cells.
+
+You receive:
+1. A structured form map with regions (headers, fields with label+input cells, tables, static text)
+2. Available data: profile (company info), pricing (totals), items (procurement items)
+
+Your task: determine which data field goes into each input cell.
+
+=== CRITICAL RULES ===
+- "Итоговая стоимость" = pricing.ourTotalPrice (OUR price), NEVER НМЦК!
+- For ИП: КПП = "нет (ИП)"
+- Use profile data EXACTLY
+- ОГРН → ОГРНИП for ИП
+
+=== DATA PATHS ===
+Profile fields: profile.fullName, profile.shortName, profile.inn, profile.ogrn, profile.okpo, profile.kpp, profile.oktmo, profile.okved, profile.legalAddress, profile.mailingAddress, profile.actualAddress
+Bank: profile.bank.name, profile.bank.bic, profile.bank.account, profile.bank.corrAccount
+Director: profile.director.fio, profile.director.fioShort, profile.director.position, profile.director.phone, profile.director.email
+Passport: profile.passport.series, profile.passport.number, profile.passport.issueDate, profile.passport.issuedBy, profile.passport.departmentCode
+Registration: profile.registration.ogrnDate, profile.registration.ogrnRecord
+Tax: profile.tax.system, profile.tax.ndsRate, profile.tax.ndsLabel
+Procurement: procurement.number, procurement.name, procurement.nmck, procurement.deliveryDeadline
+Pricing: pricing.ourTotalPrice, pricing.ndsRate, pricing.ndsAmount, pricing.ndsLabel
+Items array: items[].name, items[].quantity, items[].nmckPrice, items[].ourUnitPrice, items[].ourTotal, items[].ourSpecs, items[].notes
+
+Return ONLY valid JSON:
+{
+  "mappings": [
+    {"cell": "B5", "dataPath": "profile.inn", "confidence": "high"}
+  ],
+  "tables": [
+    {
+      "dataStartRow": 11,
+      "columnMap": {
+        "A": "rowNumber",
+        "B": "items[].name",
+        "C": "items[].quantity"
+      }
+    }
+  ],
+  "unmapped": ["D15"],
+  "computed": [
+    {"cell": "E20", "expression": "SUM", "label": "Итого"}
+  ]
+}
+
+Confidence: high = exact match, medium = likely but ambiguous, low = uncertain.`;
+
 // ========== ANALYSIS ==========
 export async function processAnalysis(procurementId: string) {
   const client = getClient();
@@ -517,7 +567,7 @@ export async function processAnalysis(procurementId: string) {
 // ========== FORM FILLING ==========
 export async function processFormFilling(
   procurementId: string,
-  options?: { profileId?: string; formIds?: string[] }
+  options?: { profileId?: string; formIds?: string[]; fillEngine?: "v1" | "v2" }
 ) {
   const client = getClient();
   const up = (msg: string, progress: number) =>
@@ -567,21 +617,47 @@ export async function processFormFilling(
 
       let buf = Buffer.from(await (await fetch(form.url)).arrayBuffer());
       const mime = form.fileType === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-      const txt = await parseFileContent(buf, mime, form.fileName);
 
-      const fillResult = await callClaude(FORM_PROMPT, `Форма: "${form.name}"\n\nТекст:\n${txt}\n\nДанные:\n${JSON.stringify(ctx, null, 2)}`);
-      const instr = extractJson(fillResult).instructions || [];
+      // V2 XLSX pipeline
+      if (form.fileType === "xlsx" && options?.fillEngine === "v2") {
+        const formMap = await buildFormMap(buf);
+        const mapPrompt = `Форма: "${form.name}"\n\nСтруктура формы:\n${JSON.stringify(formMap, null, 2)}\n\nДанные:\n${JSON.stringify(ctx, null, 2)}`;
+        const mapResult = await callClaude(FORM_MAP_PROMPT, mapPrompt);
+        const mapping = extractJson(mapResult) as ClaudeMapping;
+        const safeMapping: ClaudeMapping = {
+          mappings: mapping.mappings || [],
+          tables: mapping.tables || [],
+          unmapped: mapping.unmapped || [],
+          computed: mapping.computed || [],
+        };
+        const resolved = resolveMapping(safeMapping, ctx);
+        buf = await applyXlsxV2(buf, resolved.cellValues, resolved.tableData);
+        const check = await selfCheck(buf, resolved.cellValues, formMap);
+        if (check.failed > 0) {
+          const retryValues = check.details
+            .filter(d => d.reason === "merged_cell" || d.reason === "write_failed")
+            .map(d => ({ cell: d.cell, value: d.expected }));
+          if (retryValues.length > 0) {
+            buf = await applyXlsxV2(buf, retryValues);
+          }
+        }
+      } else {
+        // V1 pipeline (original)
+        const txt = await parseFileContent(buf, mime, form.fileName);
+        const fillResult = await callClaude(FORM_PROMPT, `Форма: "${form.name}"\n\nТекст:\n${txt}\n\nДанные:\n${JSON.stringify(ctx, null, 2)}`);
+        const instr = extractJson(fillResult).instructions || [];
 
-      if (form.fileType === "docx") buf = await applyDocxInstructions(buf, instr);
-      else if (form.fileType === "xlsx") buf = await applyXlsxInstructions(buf, instr);
+        if (form.fileType === "docx") buf = await applyDocxInstructions(buf, instr);
+        else if (form.fileType === "xlsx") buf = await applyXlsxInstructions(buf, instr);
 
-      // self-check
-      const filledTxt = await parseFileContent(buf, mime, form.fileName);
-      const checkResult = await callClaude(CHECK_PROMPT, `Данные:\n${JSON.stringify(ctx, null, 2)}\n\nФорма "${form.name}":\n${filledTxt}`);
-      const corr = extractJson(checkResult).corrections || [];
-      if (corr.length) {
-        if (form.fileType === "docx") buf = await applyDocxInstructions(buf, corr);
-        else if (form.fileType === "xlsx") buf = await applyXlsxInstructions(buf, corr);
+        // V1 self-check
+        const filledTxt = await parseFileContent(buf, mime, form.fileName);
+        const checkResult = await callClaude(CHECK_PROMPT, `Данные:\n${JSON.stringify(ctx, null, 2)}\n\nФорма "${form.name}":\n${filledTxt}`);
+        const corr = extractJson(checkResult).corrections || [];
+        if (corr.length) {
+          if (form.fileType === "docx") buf = await applyDocxInstructions(buf, corr);
+          else if (form.fileType === "xlsx") buf = await applyXlsxInstructions(buf, corr);
+        }
       }
 
       const sid = await uploadToStorage(client, buf, mime);

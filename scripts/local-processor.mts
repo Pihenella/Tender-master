@@ -5,9 +5,11 @@ import { anyApi } from "convex/server";
 import { spawn } from "child_process";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { buildFormMap } from "../src/lib/server/formMap.js";
-import { resolveMapping, applyXlsxV2, selfCheck } from "../src/lib/server/fillV2.js";
-import type { ClaudeMapping } from "../src/lib/server/fillV2.js";
+import formMapModule from "../src/lib/server/formMap";
+import fillV2Module from "../src/lib/server/fillV2";
+const { buildFormMap } = formMapModule as any;
+const { resolveMapping, applyXlsxV2, selfCheck } = fillV2Module as any;
+type ClaudeMapping = import("../src/lib/server/fillV2").ClaudeMapping;
 
 const api = anyApi as any;
 

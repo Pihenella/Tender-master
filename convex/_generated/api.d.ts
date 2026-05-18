@@ -15,6 +15,7 @@ import type * as authHelper from "../authHelper.js";
 import type * as calculationUpload from "../calculationUpload.js";
 import type * as crons from "../crons.js";
 import type * as docxSlicer from "../docxSlicer.js";
+import type * as driveLibrary from "../driveLibrary.js";
 import type * as files from "../files.js";
 import type * as formFilling from "../formFilling.js";
 import type * as formFillingActions from "../formFillingActions.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   calculationUpload: typeof calculationUpload;
   crons: typeof crons;
   docxSlicer: typeof docxSlicer;
+  driveLibrary: typeof driveLibrary;
   files: typeof files;
   formFilling: typeof formFilling;
   formFillingActions: typeof formFillingActions;

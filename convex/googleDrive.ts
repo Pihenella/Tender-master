@@ -4,7 +4,7 @@ import { SignJWT, importPKCS8 } from "jose";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
-const SCOPES = "https://www.googleapis.com/auth/drive.file";
+const SCOPES = "https://www.googleapis.com/auth/drive";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 function normalizePrivateKey(value: string) {

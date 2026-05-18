@@ -1,80 +1,54 @@
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { spawn } from "child_process";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { buildFormMap } from "./formMap";
+import { getParticipantProfile, profiles } from "../profiles";
+import { isCollectiveParticipantForm } from "../formRules";
+import { autofillKnownDocxFields } from "./docxAutofill";
+import { autofillKnownXlsxFields } from "./xlsxAutofill";
+import { buildFormMap, type FormMap } from "./formMap";
 import { resolveMapping, applyXlsxV2, selfCheck } from "./fillV2";
-import type { ClaudeMapping } from "./fillV2";
+import type { AiMapping, CellValue, CheckResult } from "./fillV2";
+import { callOpenAIJson, getOpenAIConfig } from "./openaiModel";
+import {
+  BID_PACKAGE_ANALYSIS_OUTPUT_SCHEMA,
+  CALCULATION_OUTPUT_SCHEMA,
+  CORRECTIONS_OUTPUT_SCHEMA,
+  EXTRACTION_OUTPUT_SCHEMA,
+  FILL_INSTRUCTIONS_OUTPUT_SCHEMA,
+  FORM_MAP_OUTPUT_SCHEMA,
+  UNRESOLVED_CELLS_OUTPUT_SCHEMA,
+  normalizeFillInstructions,
+  type BidPackagePlan,
+  type ExtractionResult,
+  type RiskNote,
+} from "./openaiSchemas";
+import {
+  buildExtractionBatches,
+  formatExtractionBatch,
+  mergeBidPackagePlans,
+  mergeExtractionResults,
+} from "./extractionBatches";
+import {
+  findMatchingRequirement,
+  inferPackageSection,
+  isRequiredByPackagePlan,
+  validateFirstPartAnonymity,
+  validatePriceOffer,
+  type PackageArtifactInput,
+} from "./packageValidation";
+import {
+  generatePackageInventory,
+  generateSubmissionMemo,
+  generateTenderSummary,
+  type PackageInventoryFile,
+} from "./packageMemo";
 
 const api = anyApi as any;
+const AI_CONFIG = getOpenAIConfig();
 
 function getClient() {
   return new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-}
-
-// --- Claude CLI ---
-async function callClaude(systemPrompt: string, userMessage: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("claude", ["-p", "--system-prompt", systemPrompt], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-    proc.on("close", (code) => {
-      if (code !== 0) reject(new Error(`claude exited ${code}: ${stderr}`));
-      else resolve(stdout.trim());
-    });
-    proc.on("error", reject);
-    proc.stdin.write(userMessage);
-    proc.stdin.end();
-  });
-}
-
-// --- JSON helpers ---
-function extractJson(text: string): any {
-  try { return JSON.parse(text); } catch {}
-  const m = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/```\s*([\s\S]*?)\s*```/) || text.match(/(\[[\s\S]*\])/) || text.match(/(\{[\s\S]*\})/);
-  let s = m ? (m[1] || m[0]) : text;
-  s = s.replace(/"(?:[^"\\]|\\.)*"/g, (match) =>
-    match.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t").replace(/[\x00-\x1f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"))
-  );
-  try { return JSON.parse(s); } catch {}
-  // Try to extract valid JSON by finding balanced structure
-  for (const startChar of ["{", "["]) {
-    const idx = s.indexOf(startChar);
-    if (idx === -1) continue;
-    const endChar = startChar === "{" ? "}" : "]";
-    let depth = 0, inStr2 = false, esc2 = false;
-    for (let i = idx; i < s.length; i++) {
-      const ch = s[i];
-      if (esc2) { esc2 = false; continue; }
-      if (ch === "\\") { esc2 = true; continue; }
-      if (ch === '"') { inStr2 = !inStr2; continue; }
-      if (inStr2) continue;
-      if (ch === startChar) depth++;
-      else if (ch === endChar) { depth--; if (depth === 0) { try { return JSON.parse(s.substring(idx, i + 1)); } catch { break; } } }
-    }
-  }
-  // repair truncated
-  let r = s.replace(/,\s*"[^"]*$/, "").replace(/,\s*$/, "");
-  const stack: string[] = [];
-  let inStr = false, esc = false;
-  for (const ch of r) {
-    if (esc) { esc = false; continue; }
-    if (ch === "\\") { esc = true; continue; }
-    if (ch === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (ch === "{") stack.push("}");
-    else if (ch === "[") stack.push("]");
-    else if (ch === "}" || ch === "]") stack.pop();
-  }
-  if (inStr) r += '"';
-  try { return JSON.parse(r + stack.reverse().join("")); } catch (e) {
-    throw new Error(`Failed to extract JSON from response: ${(e as Error).message}\nOriginal text (first 500 chars): ${text.substring(0, 500)}`);
-  }
 }
 
 // --- Upload to Convex storage ---
@@ -155,9 +129,33 @@ async function sliceDocx(buf: Buffer, startBlock: number, endBlock: number): Pro
   if (!bm) throw new Error("No w:body");
   const sectPr = bm[2].match(/<w:sectPr[\s\S]*?<\/w:sectPr>/)?.[0] || "";
   const all: string[] = [];
-  let m;
-  const re = /<(w:p|w:tbl|w:sdt)\b[\s\S]*?<\/\1>/g;
-  while ((m = re.exec(bm[2])) !== null) all.push(m[0]);
+  const bc = bm[2];
+  const openRe = /<(w:p|w:tbl|w:sdt)\b/g;
+  let m, lastEnd = 0;
+  while ((m = openRe.exec(bc)) !== null) {
+    if (m.index < lastEnd) continue;
+    const tag = m[1], blockStart = m.index, closeStr = `</${tag}>`;
+    let blockEnd = -1;
+    if (tag === "w:tbl") {
+      const findTag = (xml: string, t: string, from: number): number => {
+        let i = from;
+        while (true) { i = xml.indexOf(`<${t}`, i); if (i === -1) return -1; const c = xml[i + t.length + 1]; if (c === ">" || c === " " || c === "/" || c === "\n" || c === "\r" || c === "\t") return i; i += t.length + 1; }
+      };
+      let depth = 1, pos = m.index + m[0].length;
+      while (depth > 0 && pos < bc.length) {
+        const nO = findTag(bc, tag, pos), nC = bc.indexOf(closeStr, pos);
+        if (nC === -1) break;
+        if (nO !== -1 && nO < nC) { depth++; pos = nO + tag.length + 1; }
+        else { depth--; pos = nC + closeStr.length; }
+      }
+      if (depth === 0) blockEnd = pos;
+    } else {
+      const gt = bc.indexOf(">", m.index + m[0].length);
+      if (gt !== -1 && bc[gt - 1] === "/") { blockEnd = gt + 1; }
+      else { const ci = bc.indexOf(closeStr, m.index + m[0].length); if (ci !== -1) blockEnd = ci + closeStr.length; }
+    }
+    if (blockEnd !== -1) { all.push(bc.substring(blockStart, blockEnd)); lastEnd = blockEnd; openRe.lastIndex = blockEnd; }
+  }
   const sel = all.slice(Math.max(0, startBlock - 1), Math.min(all.length, endBlock));
   if (!sel.length) throw new Error(`No blocks in range ${startBlock}-${endBlock}`);
   const pre = docXml.substring(0, docXml.indexOf("<w:body"));
@@ -173,10 +171,12 @@ async function sliceDocx(buf: Buffer, startBlock: number, endBlock: number): Pro
 async function sliceXlsxSheet(buf: Buffer, sheetName: string): Promise<Buffer> {
   const src = new ExcelJS.Workbook();
   await src.xlsx.load(buf as unknown as ArrayBuffer);
-  const ss = src.getWorksheet(sheetName);
+  const ss =
+    src.getWorksheet(sheetName) ||
+    src.worksheets.find((sheet) => sheet.name.trim() === sheetName.trim());
   if (!ss) throw new Error(`Sheet "${sheetName}" not found`);
   const dst = new ExcelJS.Workbook();
-  const ds = dst.addWorksheet(sheetName);
+  const ds = dst.addWorksheet(ss.name);
   ss.columns.forEach((c, i) => { if (c.width) ds.getColumn(i + 1).width = c.width; });
   ss.eachRow({ includeEmpty: true }, (r, n) => {
     const dr = ds.getRow(n);
@@ -279,39 +279,12 @@ async function applyXlsxInstructions(buffer: Buffer, instructions: any[]): Promi
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-// --- Profiles ---
-const profiles: Record<string, any> = {
-  boltinov: {
-    fullName: "Индивидуальный предприниматель Болтинов Данил Александрович", shortName: "ИП Болтинов Д.А.",
-    inn: "662302062065", ogrn: "324665800041636", okpo: "2030070106", kpp: "", oktmo: "94701000001", okved: "47.91",
-    legalAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
-    mailingAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
-    actualAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
-    bank: { name: 'ООО "Банк Точка"', bic: "044525104", account: "40802810220000245984", corrAccount: "30101810745374525104" },
-    director: { fio: "Болтинов Данил Александрович", fioShort: "Болтинов Д.А.", position: "Индивидуальный предприниматель", phone: "+79193876713", email: "boltinov99@mail.ru" },
-    passport: { series: "6519", number: "880947", issueDate: "22.05.2019", issuedBy: "ГУ МВД России по Свердловской области", departmentCode: "660-008" },
-    registration: { ogrnDate: "22.02.2024", ogrnRecord: "324665800041636" },
-    tax: { system: "УСН", ndsRate: 5, ndsLabel: "НДС 5%" },
-    ownershipChain: [{ fio: "Болтинов Данил Александрович", inn: "662302062065", ogrn: "324665800041636", role: "руководитель", share: "100%", address: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.", passport: "6519 880947" }],
-  },
-  pikhenek: {
-    fullName: "Индивидуальный предприниматель Пихенек Юрий Дмитриевич", shortName: "ИП Пихенек Ю.Д.",
-    inn: "662306468179", ogrn: "324665800041941", okpo: "2030070432", kpp: "", oktmo: "65701000001", okved: "47.91",
-    legalAddress: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32",
-    mailingAddress: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32",
-    actualAddress: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32",
-    bank: { name: 'ООО "Банк Точка"', bic: "044525104", account: "40802810320000245978", corrAccount: "30101810745374525104" },
-    director: { fio: "Пихенек Юрий Дмитриевич", fioShort: "Пихенек Ю.Д.", position: "Индивидуальный предприниматель", phone: "+79920027767", email: "rukovoditelmp@yandex.ru" },
-    passport: { series: "", number: "", issueDate: "", issuedBy: "", departmentCode: "" },
-    registration: { ogrnDate: "22.02.2024", ogrnRecord: "324665800041941" },
-    tax: { system: "УСН", ndsRate: 5, ndsLabel: "НДС 5%" },
-    ownershipChain: [{ fio: "Пихенек Юрий Дмитриевич", inn: "662306468179", ogrn: "324665800041941", role: "руководитель", share: "100%", address: "Республика Удмуртская, р-н Завьяловский, д. Пычанки, улица Сенная, д. 32", passport: "" }],
-  },
-};
-
 // --- Prompts ---
 const EXTRACTION_PROMPT = `You are analyzing Russian procurement (закупка) documentation files.
 The documents include block numbers [Block N] for DOCX files.
+
+Before extracting forms, read the information card and the application composition/content sections.
+Search specifically for: первая часть, вторая часть, состав заявки, Форма, коммерческое предложение, критерии, обеспечение, СМП, персональных данных, страна происхождения.
 
 Extract the following structured data as JSON:
 
@@ -345,26 +318,49 @@ IMPORTANT:
 - pp1875: запрет/ограничение/преимущество or empty
 - All prices in rubles
 - FORMS: Only forms a PARTICIPANT must fill. Look for "Образцы форм" section.
+- Use sourceFile and block/sheet coordinates whenever available so forms can be traced back to source documents.
 - Do NOT include ТЗ, contracts, instructions.
-- For DOCX forms specify startBlock/endBlock. For whole files use "whole_file". For XLSX sheets use "sheet" with sheetName.
+- For DOCX forms specify startBlock/endBlock. For whole files use "whole_file" with startBlock=0, endBlock=0, sheetName="". For XLSX sheets use "sheet" with sheetName and startBlock=0/endBlock=0.
 - Do NOT invent forms.
 - Return ONLY valid JSON`;
 
-const CALC_PROMPT = `Return a JSON array of procurement items:
-[{"itemName": "string", "pp1875": "string", "quantity": number, "nmckPrice": number, "tzSpecs": "string"}]
-Copy names EXACTLY. Format tzSpecs concisely. Return ONLY valid JSON array.`;
+const BID_PACKAGE_ANALYSIS_PROMPT = `You are building a bid package plan from Russian procurement documentation.
+The documents include source filenames and, for DOCX files, block numbers like [Block N].
+
+Return a JSON object that matches the bid_package_analysis schema:
+- tenderCard: customer, procurement number, subject, platform, dates, law/regime, lots, NMCK, payment terms, delivery/work period, guarantees, security, SMP/SME flag, evaluation criteria, key risks.
+- applicationRequirements: every document, declaration, form, price offer, platform action, upload slot, checkbox, signature, or attachment the participant must handle.
+- missingItems: documents/evidence the participant must provide but the source docs do not contain, such as passport data, powers of attorney, licenses, staff certificates, registry extracts, no-debt certificates, experience proof, or other evidence.
+- riskNotes: visible risks, blockers, ambiguity, first-part anonymity issues, price-line constraints, platform-only actions, or contradictions.
+
+Rules:
+- Source documentation is the authority. Do not invent requirements or participant data.
+- Read the information card and application composition/content sections before deciding what belongs in the package.
+- Search specifically for: первая часть, вторая часть, состав заявки, Форма, коммерческое предложение, критерии, обеспечение, СМП, персональных данных, страна происхождения.
+- Split requirements into sections: first_part, second_part, price_offer, required_docs, platform_actions.
+- For two-part tenders, first_part is anonymous unless the docs explicitly say otherwise. Flag participant identifiers, signatures, seals, bank details, contacts, price, or metadata as risks for first_part.
+- Price offer must respect buyer line limits. Flag missing line limits or platform price fields.
+- For each requirement, missing item, and risk, include sourceReferences when possible: sourceFile, block range, page, sheet/row, and a short quote. If coordinates are unavailable, use null values and locationType "unknown".
+- Unknown text fields must be "", unknown numbers null, unknown arrays [].
+- Return ONLY valid JSON`;
+
+const CALC_PROMPT = `Return a JSON object with a rows array of procurement items:
+{"rows": [{"itemName": "string", "pp1875": "string", "quantity": number, "nmckPrice": number, "tzSpecs": "string"}]}
+Copy names EXACTLY. Format tzSpecs concisely. Return ONLY valid JSON.`;
 
 const FORM_PROMPT = `You fill Russian procurement forms for ИП participants.
 CRITICAL: "Итоговая стоимость" = pricing.ourTotalPrice (OUR price), NEVER НМЦК!
 Use profile data EXACTLY. For ИП: КПП = "нет".
 
-For DOCX: {"instructions": [{"type": "replace", "search": "exact text", "value": "filled"}, {"type": "fillTable", "markerText": "header", "columns": [...], "rows": [...]}]}
-For XLSX: {"instructions": [{"type": "cell", "row": N, "col": N, "value": "..."}, {"type": "fillRows", "startRow": N, "rows": [[...]]}]}
+For DOCX replace: {"type":"replace","search":"exact text","value":"filled","markerText":null,"columns":[],"rows":[],"row":null,"col":null,"startRow":null}
+For DOCX table: {"type":"fillTable","search":null,"value":null,"markerText":"header","columns":["col1"],"rows":[{"values":[],"cells":[{"column":"col1","value":"..."}]}],"row":null,"col":null,"startRow":null}
+For XLSX cell: {"type":"cell","search":null,"value":"...","markerText":null,"columns":[],"rows":[],"row":5,"col":3,"startRow":null}
+For XLSX rows: {"type":"fillRows","search":null,"value":null,"markerText":null,"columns":[],"rows":[{"values":[1,"Item"],"cells":[]}],"row":null,"col":null,"startRow":3}
 
 Fill ALL placeholders. Generate ALL item rows. Return ONLY valid JSON.`;
 
 const CHECK_PROMPT = `Verify filled form against source data. Return JSON:
-{"corrections": [{"type": "replace", "search": "wrong", "value": "correct"}]}
+{"corrections": [{"type":"replace","search":"wrong","value":"correct","markerText":null,"columns":[],"rows":[],"row":null,"col":null,"startRow":null}]}
 Empty corrections if all correct. Return ONLY valid JSON.`;
 
 const FORM_MAP_PROMPT = `You analyze Russian procurement form structures and map data fields to cells.
@@ -390,7 +386,7 @@ Registration: profile.registration.ogrnDate, profile.registration.ogrnRecord
 Tax: profile.tax.system, profile.tax.ndsRate, profile.tax.ndsLabel
 Procurement: procurement.number, procurement.name, procurement.nmck, procurement.deliveryDeadline
 Pricing: pricing.ourTotalPrice, pricing.ndsRate, pricing.ndsAmount, pricing.ndsLabel
-Items array: items[].name, items[].quantity, items[].nmckPrice, items[].ourUnitPrice, items[].ourTotal, items[].ourSpecs, items[].notes
+Items array: items[].name, items[].quantity, items[].unit, items[].nmckPrice, items[].ourUnitPrice, items[].ourTotal, items[].ourSpecs, items[].notes
 
 Return ONLY valid JSON:
 {
@@ -400,11 +396,11 @@ Return ONLY valid JSON:
   "tables": [
     {
       "dataStartRow": 11,
-      "columnMap": {
-        "A": "rowNumber",
-        "B": "items[].name",
-        "C": "items[].quantity"
-      }
+      "columns": [
+        {"column": "A", "dataPath": "rowNumber"},
+        {"column": "B", "dataPath": "items[].name"},
+        {"column": "C", "dataPath": "items[].quantity"}
+      ]
     }
   ],
   "unmapped": ["D15"],
@@ -437,29 +433,38 @@ export async function processAnalysis(procurementId: string) {
       parsed.push({ name: f.fileName, content, buffer: buf, fileType: f.fileType, storageId: f.storageId });
     }
 
-    // prioritize + truncate
-    const kw = ["ТЗ", "техническ", "извещение", "документация", "НМЦ", "расчет", "приложение", "форма"];
-    const sorted = [...parsed].sort((a, b) => {
-      const ap = kw.some((k) => a.name.toLowerCase().includes(k.toLowerCase())) ? 0 : 1;
-      const bp = kw.some((k) => b.name.toLowerCase().includes(k.toLowerCase())) ? 0 : 1;
-      return ap - bp;
-    });
-    let total = 0;
-    const incl: typeof parsed = [];
-    for (const f of sorted) {
-      if (total + f.content.length > 500000 && incl.length > 0) {
-        const rem = 500000 - total;
-        if (rem > 10000) incl.push({ ...f, content: f.content.slice(0, rem) + "\n...[ОБРЕЗАНО]" });
-        break;
+    const batches = buildExtractionBatches(parsed.map((file) => ({ name: file.name, content: file.content })));
+    const extractionResults: ExtractionResult[] = [];
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      await up(`${AI_CONFIG.model} анализирует документы ${i + 1}/${batches.length}...`, 20 + Math.round((i / Math.max(1, batches.length)) * 30));
+      extractionResults.push(await callOpenAIJson(
+        EXTRACTION_PROMPT,
+        `Документы:\n\n${formatExtractionBatch(batch)}`,
+        EXTRACTION_OUTPUT_SCHEMA
+      ));
+    }
+    const data = mergeExtractionResults(extractionResults);
+
+    let bidPackagePlan: BidPackagePlan | null = null;
+    let packageRequirementCount = 0;
+    try {
+      const bidPackageResults: BidPackagePlan[] = [];
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        await up(`${AI_CONFIG.model} собирает план заявки ${i + 1}/${batches.length}...`, 50 + Math.round((i / Math.max(1, batches.length)) * 5));
+        bidPackageResults.push(await callOpenAIJson(
+          BID_PACKAGE_ANALYSIS_PROMPT,
+          `Документы:\n\n${formatExtractionBatch(batch)}`,
+          BID_PACKAGE_ANALYSIS_OUTPUT_SCHEMA
+        ));
       }
-      incl.push(f);
-      total += f.content.length;
+      bidPackagePlan = mergeBidPackagePlans(bidPackageResults);
+      packageRequirementCount = bidPackagePlan.applicationRequirements.length;
+    } catch (error) {
+      console.warn("Bid package analysis skipped:", error);
     }
 
-    await up("Claude анализирует документы...", 20);
-    const fc = incl.map((f) => `=== FILE: ${f.name} ===\n${f.content}`).join("\n\n---\n\n");
-    const result = await callClaude(EXTRACTION_PROMPT, `Документы:\n\n${fc}`);
-    const data = extractJson(result);
     await up("Сохранение данных...", 55);
 
     await client.mutation(api.procurements.updateFromAnalysis, {
@@ -472,6 +477,12 @@ export async function processAnalysis(procurementId: string) {
     });
 
     await client.mutation(api.localApi.clearProcurementData, { procurementId });
+    if (bidPackagePlan) {
+      await client.mutation(api.localApi.saveBidPackagePlan, {
+        procurementId,
+        ...bidPackagePlan,
+      });
+    }
 
     const items = data.items || [];
     if (items.length > 0) {
@@ -517,8 +528,12 @@ export async function processAnalysis(procurementId: string) {
 
     // calculation
     await up("Генерация калькуляции...", 70);
-    const calcResult = await callClaude(CALC_PROMPT, `Позиции:\n${JSON.stringify(items.map((it: any) => ({ name: it.name, quantity: it.quantity, unit: it.unit, nmckPrice: it.nmckPrice, tzSpecs: it.tzSpecs, pp1875: it.pp1875 || "" })), null, 2)}`);
-    const calcRows = extractJson(calcResult);
+    const calcResult = await callOpenAIJson(
+      CALC_PROMPT,
+      `Позиции:\n${JSON.stringify(items.map((it: any) => ({ name: it.name, quantity: it.quantity, unit: it.unit, nmckPrice: it.nmckPrice, tzSpecs: it.tzSpecs, pp1875: it.pp1875 || "" })), null, 2)}`,
+      CALCULATION_OUTPUT_SCHEMA
+    );
+    const calcRows = calcResult.rows;
 
     await up("Создание Excel...", 85);
     const wb = new ExcelJS.Workbook();
@@ -544,7 +559,7 @@ export async function processAnalysis(procurementId: string) {
       row.getCell(6).value = { formula: `D${rn}*E${rn}` } as any;
       row.getCell(10).value = { formula: `D${rn}*I${rn}` } as any;
       [8, 9, 12].forEach((c) => { row.getCell(c).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }; });
-      cItems.push({ procurementId, itemIndex: i, itemName: nm, pp1875: pp || undefined, quantity: qt, nmckPrice: np, tzSpecs: ts || undefined });
+      cItems.push({ procurementId, itemIndex: i, itemName: nm, unit: oi?.unit || "шт", pp1875: pp || undefined, quantity: qt, nmckPrice: np, tzSpecs: ts || undefined });
     }
     const tr = sh.addRow(["", "ИТОГО", "", "", "", { formula: `SUM(F2:F${rc + 1})` }, "", "", "", { formula: `SUM(J2:J${rc + 1})` }]);
     tr.font = { bold: true };
@@ -554,14 +569,90 @@ export async function processAnalysis(procurementId: string) {
     const cSid = await uploadToStorage(client, exBuf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     const proc = await client.query(api.procurements.get, { id: procurementId });
     await client.mutation(api.localApi.clearGeneratedFiles, { procurementId });
-    await client.mutation(api.files.saveGeneratedFile, { procurementId, profileId: proc?.profileId || "pikhenek", storageId: cSid, fileName: `Калькуляция_${proc?.number || "draft"}.xlsx`, formType: "calculation" });
+    await client.mutation(api.files.saveGeneratedFile, {
+      procurementId,
+      profileId: proc?.profileId || "pikhenek",
+      storageId: cSid,
+      fileName: `Калькуляция_${proc?.number || "draft"}.xlsx`,
+      formType: "calculation",
+      packageSection: "price_offer",
+      artifactType: "calculation",
+      validationStatus: "not_checked",
+    });
     if (cItems.length) await client.mutation(api.localApi.saveCalculationItemsBatch, { items: cItems });
 
-    await client.mutation(api.procurements.updateStatus, { id: procurementId, status: "analyzed" as any, statusMessage: `Извлечено ${items.length} позиций, ${forms.length} форм`, progress: 100 });
+    await client.mutation(api.procurements.updateStatus, { id: procurementId, status: "analyzed" as any, statusMessage: `Извлечено ${items.length} позиций, ${forms.length} форм, ${packageRequirementCount} требований заявки`, progress: 100 });
   } catch (e: any) {
     console.error("Analysis error:", e.message);
     await client.mutation(api.procurements.updateStatus, { id: procurementId, status: "uploaded" as any, statusMessage: `Ошибка: ${e.message}`, progress: 0 }).catch(() => {});
   }
+}
+
+type V2Report = {
+  formName: string;
+  fields: Array<{
+    field: string;
+    value: string;
+    confidence: "high" | "low";
+    note?: string;
+  }>;
+  warnings: string[];
+};
+
+function getFormFieldLabel(formMap: FormMap, cell: string) {
+  const region = formMap.regions.find((item) => item.type === "field" && item.input.cell === cell);
+  return region?.type === "field" ? region.label.value : cell;
+}
+
+function buildV2Report(
+  formName: string,
+  formMap: FormMap,
+  expectedValues: CellValue[],
+  check: CheckResult
+): V2Report {
+  const fields = expectedValues.map((cellValue) => {
+    const failed = check.details.find((detail) => detail.cell === cellValue.cell && detail.reason !== "unmapped");
+    return {
+      field: getFormFieldLabel(formMap, cellValue.cell),
+      value: String(cellValue.value),
+      confidence: failed ? "low" as const : "high" as const,
+      note: failed ? `${failed.reason}: получено "${failed.actual}"` : undefined,
+    };
+  });
+
+  const warnings = check.details
+    .filter((detail) => detail.reason === "unmapped")
+    .map((detail) => `Поле "${getFormFieldLabel(formMap, detail.cell)}" (${detail.cell}) не заполнено`);
+
+  return { formName, fields, warnings };
+}
+
+async function saveTextGeneratedFile(
+  client: ConvexHttpClient,
+  args: {
+    procurementId: string;
+    profileId: "boltinov" | "pikhenek";
+    fileName: string;
+    formType: string;
+    content: string;
+    artifactType: "memo" | "inventory" | "risk_report" | "generated_doc";
+  }
+) {
+  const storageId = await uploadToStorage(
+    client,
+    Buffer.from(args.content, "utf-8"),
+    "text/markdown; charset=utf-8"
+  );
+  await client.mutation(api.files.saveGeneratedFile, {
+    procurementId: args.procurementId,
+    profileId: args.profileId,
+    storageId,
+    fileName: args.fileName,
+    formType: args.formType,
+    packageSection: "root",
+    artifactType: args.artifactType,
+    validationStatus: "not_checked",
+  });
 }
 
 // ========== FORM FILLING ==========
@@ -579,9 +670,11 @@ export async function processFormFilling(
     const calcData = await client.query(api.files.getCalculationData, { procurementId });
 
     // Use provided profileId or fall back to procurement's profileId
-    const activeProfileId = options?.profileId || proc.profileId;
+    const activeProfileId = (options?.profileId || proc.profileId) as "boltinov" | "pikhenek";
     const profile = profiles[activeProfileId];
     if (!profile) throw new Error("Профиль не найден");
+    const participantProfile = getParticipantProfile(activeProfileId);
+    const bidPackagePlan = await client.query(api.procurements.getBidPackagePlan, { procurementId }) as BidPackagePlan;
 
     const ourTotal = calcData.reduce((s: number, d: any) => s + (d.ourTotal || 0), 0);
     const ndsRate = profile.tax.ndsRate;
@@ -589,82 +682,264 @@ export async function processFormFilling(
       procurement: { number: proc.number, name: proc.name, nmck: proc.nmck, deliveryDeadline: proc.deliveryDeadline, deliveryAddresses: proc.deliveryAddresses },
       pricing: { ourTotalPrice: ourTotal, ndsRate, ndsAmount: Math.round((ourTotal * ndsRate / (100 + ndsRate)) * 100) / 100, ndsLabel: profile.tax.ndsLabel },
       profile: { ...profile, kpp: profile.kpp || "нет (ИП)" },
-      items: calcData.map((d: any) => ({ name: d.itemName, quantity: d.quantity, nmckPrice: d.nmckPrice, ourSpecs: d.ourSpecs, ourUnitPrice: d.ourUnitPrice, ourTotal: d.ourTotal, notes: d.notes, tzSpecs: d.tzSpecs })),
+      items: calcData.map((d: any) => ({ name: d.itemName, quantity: d.quantity, unit: d.unit, nmckPrice: d.nmckPrice, ourSpecs: d.ourSpecs, ourUnitPrice: d.ourUnitPrice, ourTotal: d.ourTotal, notes: d.notes, tzSpecs: d.tzSpecs })),
     };
 
     const allForms = await client.query(api.files.getExtractedForms, { procurementId });
     if (!allForms.length) throw new Error("Нет форм");
+    const fillableForms = allForms.filter((f: any) => !isCollectiveParticipantForm(f.name));
+    const skippedCollectiveForms = allForms.length - fillableForms.length;
+    const packageRequiredForms = fillableForms.filter((f: any) => isRequiredByPackagePlan(f.name, bidPackagePlan));
+    const skippedByPlan = fillableForms.length - packageRequiredForms.length;
 
     // Filter to selected forms if specified
     const formsToFill = options?.formIds
-      ? allForms.filter((f: any) => options.formIds!.includes(f._id))
-      : allForms;
+      ? fillableForms.filter((f: any) => options.formIds!.includes(f._id))
+      : packageRequiredForms;
 
     if (!formsToFill.length) throw new Error("Нет выбранных форм");
+    if (skippedCollectiveForms > 0) {
+      await up(`Пропущено форм коллективного участника: ${skippedCollectiveForms}`, 0);
+    }
+    if (skippedByPlan > 0 && !options?.formIds?.length) {
+      await up(`По плану заявки пропущено необязательных форм: ${skippedByPlan}`, 0);
+    }
+    if (options?.formIds?.length) {
+      await up(`Выбрано форм: ${formsToFill.length}/${allForms.length}`, 0);
+    }
 
     // Clear only the forms being re-filled (not all)
     if (options?.formIds) {
-      const formTypes = formsToFill.map((f: any) => f.name);
+      const formTypes = [...formsToFill.map((f: any) => f.name), "confidenceReport", "packageSummary", "packageInventory", "submissionMemo"];
       await client.mutation(api.localApi.clearGeneratedFilesByFormTypes, { procurementId, formTypes });
     } else {
       await client.mutation(api.localApi.clearGeneratedFilesExceptCalculation, { procurementId });
     }
+
+    const v2Reports: V2Report[] = [];
+    const packageArtifacts: PackageArtifactInput[] = [];
+    const inventoryFiles: PackageInventoryFile[] = [];
+    const requirementUpdates: Array<{
+      section: string;
+      requiredDocumentName: string;
+      status: "prepared";
+    }> = [];
 
     for (let i = 0; i < formsToFill.length; i++) {
       const form = formsToFill[i];
       if (!form.url) continue;
       await up(`Форма ${i + 1}/${formsToFill.length}: ${form.name}`, Math.round((i / formsToFill.length) * 80));
 
-      let buf = Buffer.from(await (await fetch(form.url)).arrayBuffer());
+      let buf: Buffer = Buffer.from(await (await fetch(form.url)).arrayBuffer());
       const mime = form.fileType === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
       // V2 XLSX pipeline
       if (form.fileType === "xlsx" && options?.fillEngine === "v2") {
         const formMap = await buildFormMap(buf);
         const mapPrompt = `Форма: "${form.name}"\n\nСтруктура формы:\n${JSON.stringify(formMap, null, 2)}\n\nДанные:\n${JSON.stringify(ctx, null, 2)}`;
-        const mapResult = await callClaude(FORM_MAP_PROMPT, mapPrompt);
-        const mapping = extractJson(mapResult) as ClaudeMapping;
-        const safeMapping: ClaudeMapping = {
+        const mapping = await callOpenAIJson(FORM_MAP_PROMPT, mapPrompt, FORM_MAP_OUTPUT_SCHEMA);
+        const safeMapping: AiMapping = {
           mappings: mapping.mappings || [],
           tables: mapping.tables || [],
           unmapped: mapping.unmapped || [],
           computed: mapping.computed || [],
         };
         const resolved = resolveMapping(safeMapping, ctx);
+        if (resolved.unresolved.length > 0) {
+          const unresolvedPrompt = `Эти ячейки формы "${form.name}" остались без данных: ${resolved.unresolved.join(", ")}.
+
+Карта формы:
+${JSON.stringify(formMap.regions.filter((region) => region.type === "field" && resolved.unresolved.includes(region.input.cell)), null, 2)}
+
+Данные:
+${JSON.stringify(ctx, null, 2)}`;
+
+          try {
+            const extra = await callOpenAIJson(
+              FORM_MAP_PROMPT,
+              unresolvedPrompt,
+              UNRESOLVED_CELLS_OUTPUT_SCHEMA
+            );
+            for (const cell of extra.cells || []) {
+              if (cell.cell && cell.value !== undefined && cell.value !== null) {
+                resolved.cellValues.push({ cell: cell.cell, value: cell.value });
+              }
+            }
+          } catch (error) {
+            console.warn(`V2 unresolved cells skipped for ${form.name}:`, error);
+          }
+        }
+
         buf = await applyXlsxV2(buf, resolved.cellValues, resolved.tableData);
-        const check = await selfCheck(buf, resolved.cellValues, formMap);
+        let check = await selfCheck(buf, resolved.cellValues, formMap);
         if (check.failed > 0) {
           const retryValues = check.details
             .filter(d => d.reason === "merged_cell" || d.reason === "write_failed")
             .map(d => ({ cell: d.cell, value: d.expected }));
           if (retryValues.length > 0) {
             buf = await applyXlsxV2(buf, retryValues);
+            check = await selfCheck(buf, resolved.cellValues, formMap);
           }
         }
+        v2Reports.push(buildV2Report(form.name, formMap, resolved.cellValues, check));
       } else {
         // V1 pipeline (original)
         const txt = await parseFileContent(buf, mime, form.fileName);
-        const fillResult = await callClaude(FORM_PROMPT, `Форма: "${form.name}"\n\nТекст:\n${txt}\n\nДанные:\n${JSON.stringify(ctx, null, 2)}`);
-        const instr = extractJson(fillResult).instructions || [];
+        const fillData = await callOpenAIJson(
+          FORM_PROMPT,
+          `Форма: "${form.name}"\n\nТекст:\n${txt}\n\nДанные:\n${JSON.stringify(ctx, null, 2)}`,
+          FILL_INSTRUCTIONS_OUTPUT_SCHEMA
+        );
+        const instr = normalizeFillInstructions(fillData.instructions || []);
 
-        if (form.fileType === "docx") buf = await applyDocxInstructions(buf, instr);
-        else if (form.fileType === "xlsx") buf = await applyXlsxInstructions(buf, instr);
+        if (form.fileType === "docx") {
+          buf = await applyDocxInstructions(buf, instr);
+          buf = await autofillKnownDocxFields(buf, ctx);
+        } else if (form.fileType === "xlsx") {
+          buf = await applyXlsxInstructions(buf, instr);
+          buf = await autofillKnownXlsxFields(buf, ctx);
+        }
 
         // V1 self-check
         const filledTxt = await parseFileContent(buf, mime, form.fileName);
-        const checkResult = await callClaude(CHECK_PROMPT, `Данные:\n${JSON.stringify(ctx, null, 2)}\n\nФорма "${form.name}":\n${filledTxt}`);
-        const corr = extractJson(checkResult).corrections || [];
+        const checkData = await callOpenAIJson(
+          CHECK_PROMPT,
+          `Данные:\n${JSON.stringify(ctx, null, 2)}\n\nФорма "${form.name}":\n${filledTxt}`,
+          CORRECTIONS_OUTPUT_SCHEMA
+        );
+        const corr = normalizeFillInstructions(checkData.corrections || []);
         if (corr.length) {
-          if (form.fileType === "docx") buf = await applyDocxInstructions(buf, corr);
-          else if (form.fileType === "xlsx") buf = await applyXlsxInstructions(buf, corr);
+          if (form.fileType === "docx") {
+            buf = await applyDocxInstructions(buf, corr);
+            buf = await autofillKnownDocxFields(buf, ctx);
+          } else if (form.fileType === "xlsx") {
+            buf = await applyXlsxInstructions(buf, corr);
+            buf = await autofillKnownXlsxFields(buf, ctx);
+          }
         }
       }
 
+      const filledText = await parseFileContent(buf, mime, form.fileName).catch(() => "");
+      const matchedRequirement = findMatchingRequirement(form.name, bidPackagePlan);
+      const packageSection = matchedRequirement?.section || inferPackageSection(form.name, bidPackagePlan.applicationRequirements);
+      packageArtifacts.push({
+        fileName: `Заполнено_${form.fileName}`,
+        formType: form.name,
+        text: filledText,
+        section: packageSection,
+      });
+      inventoryFiles.push({
+        fileName: `Заполнено_${form.fileName}`,
+        formType: form.name,
+        section: packageSection,
+        artifactType: "filled_form",
+        validationStatus: "not_checked",
+      });
+      if (matchedRequirement) {
+        requirementUpdates.push({
+          section: matchedRequirement.section,
+          requiredDocumentName: matchedRequirement.requiredDocumentName,
+          status: "prepared",
+        });
+      }
+
       const sid = await uploadToStorage(client, buf, mime);
-      await client.mutation(api.files.saveGeneratedFile, { procurementId, profileId: activeProfileId, storageId: sid, fileName: `Заполнено_${form.fileName}`, formType: form.name });
+      await client.mutation(api.files.saveGeneratedFile, {
+        procurementId,
+        profileId: activeProfileId,
+        storageId: sid,
+        fileName: `Заполнено_${form.fileName}`,
+        formType: form.name,
+        packageSection,
+        artifactType: "filled_form",
+        validationStatus: "not_checked",
+      });
     }
 
-    await client.mutation(api.procurements.updateStatus, { id: procurementId, status: "completed" as any, statusMessage: `Заполнено ${formsToFill.length} форм`, progress: 100 });
+    if (requirementUpdates.length > 0) {
+      await client.mutation(api.localApi.updateRequirementStatusesBatch, {
+        procurementId,
+        updates: requirementUpdates,
+      }).catch(() => {});
+    }
+
+    const validationRisks: RiskNote[] = [
+      ...validateFirstPartAnonymity(participantProfile, packageArtifacts),
+      ...validatePriceOffer(participantProfile, calcData.map((item: any) => ({
+        itemName: item.itemName,
+        quantity: item.quantity,
+        nmckPrice: item.nmckPrice,
+        ourUnitPrice: item.ourUnitPrice,
+        ourTotal: item.ourTotal,
+        notes: item.notes,
+      }))),
+    ];
+    if (validationRisks.length > 0) {
+      await client.mutation(api.localApi.appendRiskNotesBatch, {
+        procurementId,
+        risks: validationRisks,
+      }).catch(() => {});
+    }
+
+    const sourceFiles = await client.query(api.files.listByProcurement, { procurementId }).catch(() => []);
+    for (const source of sourceFiles) {
+      inventoryFiles.push({
+        fileName: source.fileName,
+        formType: "source",
+        section: "source_docs",
+        artifactType: "source",
+      });
+    }
+    await saveTextGeneratedFile(client, {
+      procurementId,
+      profileId: activeProfileId,
+      fileName: "Резюме_закупки.md",
+      formType: "packageSummary",
+      content: generateTenderSummary(bidPackagePlan, validationRisks),
+      artifactType: "memo",
+    });
+    await saveTextGeneratedFile(client, {
+      procurementId,
+      profileId: activeProfileId,
+      fileName: "Опись_пакета.md",
+      formType: "packageInventory",
+      content: generatePackageInventory(inventoryFiles),
+      artifactType: "inventory",
+    });
+    await saveTextGeneratedFile(client, {
+      procurementId,
+      profileId: activeProfileId,
+      fileName: "Памятка_по_подаче.md",
+      formType: "submissionMemo",
+      content: generateSubmissionMemo(bidPackagePlan, validationRisks),
+      artifactType: "memo",
+    });
+
+    if (v2Reports.length > 0) {
+      const reportSid = await uploadToStorage(
+        client,
+        Buffer.from(JSON.stringify(v2Reports), "utf-8"),
+        "application/json"
+      );
+      await client.mutation(api.files.saveGeneratedFile, {
+        procurementId,
+        profileId: activeProfileId,
+        storageId: reportSid,
+        fileName: "v2-confidence-report.json",
+        formType: "confidenceReport",
+        packageSection: "root",
+        artifactType: "risk_report",
+        validationStatus: "not_checked",
+      });
+    }
+
+    const blockingRisks = validationRisks.filter((risk) => risk.severity === "blocking").length;
+    await client.mutation(api.procurements.updateStatus, {
+      id: procurementId,
+      status: "completed" as any,
+      statusMessage: `Заполнено ${formsToFill.length} форм, пакет собран${blockingRisks ? `, блокирующих рисков: ${blockingRisks}` : ""}`,
+      progress: 100,
+    });
   } catch (e: any) {
     console.error("Form fill error:", e.message);
     await client.mutation(api.procurements.updateStatus, { id: procurementId, status: "calculation_uploaded" as any, statusMessage: `Ошибка: ${e.message}`, progress: 0 }).catch(() => {});

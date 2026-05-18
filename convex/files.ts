@@ -98,6 +98,30 @@ export const saveGeneratedFile = mutation({
     storageId: v.id("_storage"),
     fileName: v.string(),
     formType: v.string(),
+    packageSection: v.optional(v.union(
+      v.literal("source_docs"),
+      v.literal("first_part"),
+      v.literal("second_part"),
+      v.literal("price_offer"),
+      v.literal("required_docs"),
+      v.literal("root")
+    )),
+    artifactType: v.optional(v.union(
+      v.literal("source"),
+      v.literal("filled_form"),
+      v.literal("generated_doc"),
+      v.literal("memo"),
+      v.literal("inventory"),
+      v.literal("risk_report"),
+      v.literal("package_zip"),
+      v.literal("calculation")
+    )),
+    validationStatus: v.optional(v.union(
+      v.literal("not_checked"),
+      v.literal("passed"),
+      v.literal("risk"),
+      v.literal("blocked")
+    )),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("generatedFiles", args);

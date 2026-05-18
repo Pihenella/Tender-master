@@ -4,7 +4,7 @@ import {
   resolveMapping,
   applyXlsxV2,
   selfCheck,
-  type ClaudeMapping,
+  type AiMapping,
   type CellValue,
 } from "../src/lib/server/fillV2";
 
@@ -25,7 +25,7 @@ async function readCell(buffer: Buffer, cell: string): Promise<any> {
 
 describe("resolveMapping", () => {
   it("resolves simple dataPath mappings", () => {
-    const mapping: ClaudeMapping = {
+    const mapping: AiMapping = {
       mappings: [
         { cell: "B1", dataPath: "profile.inn", confidence: "high" },
         { cell: "B2", dataPath: "profile.fullName", confidence: "medium" },
@@ -48,12 +48,15 @@ describe("resolveMapping", () => {
   });
 
   it("resolves table rows from array data", () => {
-    const mapping: ClaudeMapping = {
+    const mapping: AiMapping = {
       mappings: [],
       tables: [
         {
           dataStartRow: 5,
-          columnMap: { A: "items[].name", B: "items[].quantity" },
+          columns: [
+            { column: "A", dataPath: "items[].name" },
+            { column: "B", dataPath: "items[].quantity" },
+          ],
         },
       ],
       unmapped: [],
@@ -77,7 +80,7 @@ describe("resolveMapping", () => {
   });
 
   it("marks low-confidence mappings as unresolved", () => {
-    const mapping: ClaudeMapping = {
+    const mapping: AiMapping = {
       mappings: [
         { cell: "B1", dataPath: "profile.inn", confidence: "high" },
         { cell: "B3", dataPath: "profile.phone", confidence: "low" },
@@ -98,12 +101,16 @@ describe("resolveMapping", () => {
   });
 
   it("resolves rowNumber columns with sequential 1-based numbers", () => {
-    const mapping: ClaudeMapping = {
+    const mapping: AiMapping = {
       mappings: [],
       tables: [
         {
           dataStartRow: 5,
-          columnMap: { A: "rowNumber", B: "items[].name", C: "items[].quantity" },
+          columns: [
+            { column: "A", dataPath: "rowNumber" },
+            { column: "B", dataPath: "items[].name" },
+            { column: "C", dataPath: "items[].quantity" },
+          ],
         },
       ],
       unmapped: [],
@@ -128,7 +135,7 @@ describe("resolveMapping", () => {
   });
 
   it("marks mappings with missing data as unresolved", () => {
-    const mapping: ClaudeMapping = {
+    const mapping: AiMapping = {
       mappings: [
         { cell: "B1", dataPath: "profile.missing", confidence: "high" },
       ],

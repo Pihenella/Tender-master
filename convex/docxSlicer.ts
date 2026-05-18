@@ -29,12 +29,60 @@ export async function sliceDocx(
   const sectPrMatch = bodyContent.match(/<w:sectPr[\s\S]*?<\/w:sectPr>/);
   const sectPr = sectPrMatch ? sectPrMatch[0] : "";
 
-  // Split into top-level elements
-  const blockRegex = /<(w:p|w:tbl|w:sdt)\b[\s\S]*?<\/\1>/g;
+  // Split into top-level elements: balanced nesting for w:tbl, lazy match for w:p/w:sdt
   const allBlocks: string[] = [];
+  const openRe = /<(w:p|w:tbl|w:sdt)\b/g;
   let match;
-  while ((match = blockRegex.exec(bodyContent)) !== null) {
-    allBlocks.push(match[0]);
+  let lastEnd = 0;
+  while ((match = openRe.exec(bodyContent)) !== null) {
+    if (match.index < lastEnd) continue; // skip nested matches
+    const tag = match[1];
+    const blockStart = match.index;
+    const closeStr = `</${tag}>`;
+    let blockEnd = -1;
+    if (tag === "w:tbl") {
+      // Balanced nesting for tables (w:tbl can contain nested w:tbl)
+      // Must match <w:tbl> or <w:tbl ... but NOT <w:tblPr, <w:tblW etc.
+      const findTag = (xml: string, t: string, from: number): number => {
+        let i = from;
+        while (true) {
+          i = xml.indexOf(`<${t}`, i);
+          if (i === -1) return -1;
+          const ch = xml[i + t.length + 1];
+          if (ch === ">" || ch === " " || ch === "/" || ch === "\n" || ch === "\r" || ch === "\t") return i;
+          i += t.length + 1;
+        }
+      };
+      let depth = 1;
+      let pos = match.index + match[0].length;
+      while (depth > 0 && pos < bodyContent.length) {
+        const nextOpen = findTag(bodyContent, tag, pos);
+        const nextClose = bodyContent.indexOf(closeStr, pos);
+        if (nextClose === -1) break;
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          pos = nextOpen + tag.length + 1;
+        } else {
+          depth--;
+          pos = nextClose + closeStr.length;
+        }
+      }
+      if (depth === 0) blockEnd = pos;
+    } else {
+      // w:p and w:sdt: check for self-closing (<w:p .../>) first
+      const gtIdx = bodyContent.indexOf(">", match.index + match[0].length);
+      if (gtIdx !== -1 && bodyContent[gtIdx - 1] === "/") {
+        blockEnd = gtIdx + 1;
+      } else {
+        const closeIdx = bodyContent.indexOf(closeStr, match.index + match[0].length);
+        if (closeIdx !== -1) blockEnd = closeIdx + closeStr.length;
+      }
+    }
+    if (blockEnd !== -1) {
+      allBlocks.push(bodyContent.substring(blockStart, blockEnd));
+      lastEnd = blockEnd;
+      openRe.lastIndex = blockEnd;
+    }
   }
 
   // Validate range (1-based)
@@ -89,13 +137,15 @@ export async function sliceXlsxSheet(
   const srcWorkbook = new ExcelJS.Workbook();
   await srcWorkbook.xlsx.load(xlsxBuffer as unknown as ArrayBuffer);
 
-  const srcSheet = srcWorkbook.getWorksheet(sheetName);
+  const srcSheet =
+    srcWorkbook.getWorksheet(sheetName) ||
+    srcWorkbook.worksheets.find((sheet) => sheet.name.trim() === sheetName.trim());
   if (!srcSheet) {
     throw new Error(`Sheet "${sheetName}" not found in XLSX`);
   }
 
   const dstWorkbook = new ExcelJS.Workbook();
-  const dstSheet = dstWorkbook.addWorksheet(sheetName);
+  const dstSheet = dstWorkbook.addWorksheet(srcSheet.name);
 
   // Copy column widths
   srcSheet.columns.forEach((col, i) => {

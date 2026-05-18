@@ -1,9 +1,11 @@
-import mammoth from "mammoth";
 import ExcelJS from "exceljs";
 
 export async function parseDocx(buffer: Buffer): Promise<string> {
-  const result = await mammoth.extractRawText({ buffer });
-  return result.value;
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(buffer);
+  const docXml = await zip.file("word/document.xml")?.async("string");
+  if (!docXml) return "";
+  return docXml.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
 }
 
 export async function parseDocxWithBlocks(buffer: Buffer): Promise<string> {
@@ -105,7 +107,7 @@ export async function parseFile(
   const ext = fileName.split(".").pop()?.toLowerCase();
 
   if (ext === "docx" || mimeType.includes("wordprocessingml")) {
-    return parseDocx(buffer);
+    return parseDocxWithBlocks(buffer);
   }
   if (ext === "xlsx" || mimeType.includes("spreadsheetml")) {
     return parseXlsx(buffer);

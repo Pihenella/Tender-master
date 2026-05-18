@@ -9,10 +9,101 @@ import { ExtractedItemsTable } from "@/components/extracted-items-table";
 import { GeneratedFilesList } from "@/components/generated-files-list";
 import { StatusBadge } from "@/components/status-badge";
 import { ProgressBar } from "@/components/progress-bar";
+import { isCollectiveParticipantForm } from "@/lib/formRules";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  CircleDashed,
+  ClipboardList,
+  ExternalLink,
+  FileText,
+  ShieldAlert,
+} from "lucide-react";
 import Link from "next/link";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
 type ProfileId = "boltinov" | "pikhenek";
+type PackageSection =
+  | "first_part"
+  | "second_part"
+  | "price_offer"
+  | "required_docs"
+  | "platform_actions";
+type RequirementStatus = "planned" | "prepared" | "missing" | "not_applicable" | "risk";
+type RiskSeverity = "low" | "medium" | "high" | "blocking";
+type SourceReference = {
+  sourceFile: string;
+  locationType: "block_range" | "page" | "sheet" | "row" | "whole_file" | "unknown";
+  startBlock: number | null;
+  endBlock: number | null;
+  page: number | null;
+  sheetName: string | null;
+  row: number | null;
+  textQuote: string;
+};
+type TenderCardPlan = {
+  customerName: string;
+  procurementNumber: string;
+  subject: string;
+  platformName: string;
+  platformUrl: string;
+  publicationDate: string;
+  submissionDeadline: string;
+  submissionDeadlineTimezone: string;
+  resultDate: string;
+  lawRegime: "44-FZ" | "223-FZ" | "commercial" | "unknown";
+  lots: Array<{ number: string; name: string; nmck: number | null }>;
+  nmck: number | null;
+  currency: string;
+  paymentTerms: string;
+  deliveryPeriod: string;
+  guarantees: string;
+  applicationSecurity: string;
+  contractSecurity: string;
+  smpSmeFlag: string;
+  evaluationCriteria: string[];
+  keyRisks: string[];
+};
+type ApplicationRequirementPlan = {
+  section: PackageSection;
+  requirementText: string;
+  requiredDocumentName: string;
+  obligation: "required" | "optional" | "not_applicable" | "unknown";
+  status: RequirementStatus;
+  riskNote: string;
+  sourceReferences: SourceReference[];
+};
+type MissingItemPlan = {
+  section: PackageSection;
+  title: string;
+  reason: string;
+  blocking: boolean;
+  sourceReferences: SourceReference[];
+};
+type RiskNotePlan = {
+  section: PackageSection;
+  severity: RiskSeverity;
+  text: string;
+  mitigation: string;
+  sourceReferences: SourceReference[];
+};
+type BidPackagePlan = {
+  tenderCard: TenderCardPlan | null;
+  applicationRequirements: ApplicationRequirementPlan[];
+  missingItems: MissingItemPlan[];
+  riskNotes: RiskNotePlan[];
+};
+type ConfidenceField = {
+  field: string;
+  value: string;
+  confidence: string;
+  note?: string;
+};
+type ConfidenceFormReport = {
+  formName: string;
+  fields?: ConfidenceField[];
+  warnings?: string[];
+};
 
 export default function ProcurementPage({
   params,
@@ -35,6 +126,9 @@ export default function ProcurementPage({
   const generatedFiles = useQuery(api.files.getGeneratedFiles, {
     procurementId,
   });
+  const bidPackagePlan = useQuery(api.procurements.getBidPackagePlan, {
+    procurementId,
+  }) as BidPackagePlan | undefined;
 
   const analyzeDocuments = useAction(api.analysis.analyzeDocuments);
   const parseCalculation = useAction(api.calculationUpload.parseCalculation);
@@ -68,10 +162,16 @@ export default function ProcurementPage({
   }, [fillFormsAction, procurementId, profileId, fillEngine]);
 
   const handleFillSelected = useCallback(async () => {
-    if (selectedFormIds.size === 0) return;
-    await handleFillForms(Array.from(selectedFormIds));
+    const formIds = Array.from(selectedFormIds);
+    if (formIds.length === 0) return;
+    await handleFillForms(formIds);
     setSelectedFormIds(new Set());
   }, [selectedFormIds, handleFillForms]);
+
+  const handleFillAll = useCallback(async () => {
+    await handleFillForms();
+    setSelectedFormIds(new Set());
+  }, [handleFillForms]);
 
   const toggleFormSelection = useCallback((formId: string) => {
     setSelectedFormIds((prev) => {
@@ -130,7 +230,7 @@ export default function ProcurementPage({
   return (
     <div className="min-h-screen">
       <Header profileId={profileId} onProfileChange={setProfileId} />
-      <main className="max-w-4xl mx-auto p-6">
+      <main className="max-w-6xl mx-auto p-6">
         <div className="mb-4">
           <Link
             href="/"
@@ -253,10 +353,23 @@ export default function ProcurementPage({
           )}
         </div>
 
-        {/* Stage 2: Calculation */}
+        {/* Stage 2: Bid Package Plan */}
+        {isAnalyzed && (
+          <BidPackagePlanPanel
+            plan={bidPackagePlan}
+            procurement={{
+              number: procurement.number,
+              name: procurement.name,
+              nmck: procurement.nmck,
+              deliveryDeadline: procurement.deliveryDeadline,
+            }}
+          />
+        )}
+
+        {/* Stage 3: Calculation */}
         {isAnalyzed && (
           <div className="bg-white rounded-lg border p-6 mb-6">
-            <h3 className="font-semibold mb-4">Этап 2: Калькуляция</h3>
+            <h3 className="font-semibold mb-4">Этап 3: Калькуляция</h3>
 
             {calculationFile && calculationFile.url && (
               <div className="mb-4">
@@ -291,10 +404,10 @@ export default function ProcurementPage({
           </div>
         )}
 
-        {/* Stage 3: Form Filling */}
+        {/* Stage 4: Form Filling */}
         {hasCalculation && (
           <div className="bg-white rounded-lg border p-6">
-            <h3 className="font-semibold mb-4">Этап 3: Заполнение форм</h3>
+            <h3 className="font-semibold mb-4">Этап 4: Заполнение форм</h3>
 
             <div className="flex items-center gap-3 mb-3 text-sm">
               <span className="text-gray-500">Движок:</span>
@@ -324,18 +437,24 @@ export default function ProcurementPage({
 
             <div className="flex gap-2 mb-4">
               <button
-                onClick={() => handleFillForms()}
+                onClick={selectedFormIds.size > 0 ? handleFillSelected : handleFillAll}
                 disabled={isFilling}
                 className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
               >
-                {isFilling ? "Заполнение..." : isCompleted ? "Перезаполнить все" : "Заполнить формы"}
+                {isFilling
+                  ? "Заполнение..."
+                  : selectedFormIds.size > 0
+                    ? `Заполнить выбранные (${selectedFormIds.size})`
+                    : isCompleted
+                      ? "Перезаполнить все"
+                      : "Заполнить формы"}
               </button>
               {selectedFormIds.size > 0 && !isFilling && (
                 <button
-                  onClick={handleFillSelected}
-                  className="bg-orange-500 text-white px-6 py-2 rounded-lg text-sm hover:bg-orange-600"
+                  onClick={handleFillAll}
+                  className="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg text-sm hover:bg-gray-200"
                 >
-                  Перезаполнить выбранные ({selectedFormIds.size})
+                  Заполнить все
                 </button>
               )}
             </div>
@@ -350,18 +469,29 @@ export default function ProcurementPage({
                 <div className="space-y-1">
                   {extractedForms.map((form) => {
                     const filled = filledForms?.find((f) => f.formType === form.name);
+                    const isCollectiveForm = isCollectiveParticipantForm(form.name);
                     return (
                       <label
                         key={form._id}
-                        className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer"
+                        className={`flex items-center gap-2 p-2 rounded ${
+                          isCollectiveForm
+                            ? "bg-gray-50 text-gray-400 cursor-not-allowed"
+                            : "hover:bg-gray-50 cursor-pointer"
+                        }`}
                       >
                         <input
                           type="checkbox"
-                          checked={selectedFormIds.has(form._id)}
+                          checked={!isCollectiveForm && selectedFormIds.has(form._id)}
+                          disabled={isCollectiveForm}
                           onChange={() => toggleFormSelection(form._id)}
                           className="rounded"
                         />
                         <span className="text-sm flex-1">{form.name}</span>
+                        {isCollectiveForm && (
+                          <span className="text-xs text-gray-500">
+                            не заполняем
+                          </span>
+                        )}
                         {filled && (
                           <span className="text-xs text-green-600">
                             {filled.profileId === "boltinov" ? "Болтинов" : "Пихенек"}
@@ -377,9 +507,9 @@ export default function ProcurementPage({
             {filledForms && filledForms.length > 0 && (
               <div className="mt-4">
                 <h4 className="text-sm font-medium mb-2">
-                  Заполненные формы:
+                  Файлы пакета:
                 </h4>
-                <GeneratedFilesList files={filledForms} />
+                <GeneratedFilesList files={filledForms} sourceFiles={uploadedFiles || []} />
               </div>
             )}
 
@@ -393,10 +523,441 @@ export default function ProcurementPage({
   );
 }
 
+// --- Bid Package Plan Components ---
+
+const SECTION_ORDER: PackageSection[] = [
+  "first_part",
+  "second_part",
+  "price_offer",
+  "required_docs",
+  "platform_actions",
+];
+
+const SECTION_LABELS: Record<PackageSection, string> = {
+  first_part: "Первая часть",
+  second_part: "Вторая часть",
+  price_offer: "Ценовое предложение",
+  required_docs: "Подтверждающие документы",
+  platform_actions: "Действия на площадке",
+};
+
+const STATUS_LABELS: Record<RequirementStatus, string> = {
+  planned: "Запланировано",
+  prepared: "Готово",
+  missing: "Не хватает",
+  not_applicable: "Не требуется",
+  risk: "Риск",
+};
+
+const STATUS_STYLES: Record<RequirementStatus, string> = {
+  planned: "border-slate-200 bg-slate-50 text-slate-700",
+  prepared: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  missing: "border-red-200 bg-red-50 text-red-700",
+  not_applicable: "border-zinc-200 bg-zinc-50 text-zinc-500",
+  risk: "border-amber-200 bg-amber-50 text-amber-700",
+};
+
+const SEVERITY_LABELS: Record<RiskSeverity, string> = {
+  low: "Низкий",
+  medium: "Средний",
+  high: "Высокий",
+  blocking: "Блокер",
+};
+
+const SEVERITY_STYLES: Record<RiskSeverity, string> = {
+  low: "border-slate-200 bg-slate-50 text-slate-700",
+  medium: "border-amber-200 bg-amber-50 text-amber-700",
+  high: "border-orange-200 bg-orange-50 text-orange-700",
+  blocking: "border-red-200 bg-red-50 text-red-700",
+};
+
+function BidPackagePlanPanel({
+  plan,
+  procurement,
+}: {
+  plan: BidPackagePlan | undefined;
+  procurement: {
+    number: string;
+    name: string;
+    nmck: number;
+    deliveryDeadline: string;
+  };
+}) {
+  if (plan === undefined) {
+    return (
+      <div className="bg-white rounded-md border p-6 mb-6">
+        <h3 className="font-semibold mb-2">Этап 2: План заявки</h3>
+        <p className="text-sm text-muted-foreground">Загрузка плана заявки...</p>
+      </div>
+    );
+  }
+
+  const hasPlan =
+    Boolean(plan.tenderCard) ||
+    plan.applicationRequirements.length > 0 ||
+    plan.missingItems.length > 0 ||
+    plan.riskNotes.length > 0;
+
+  if (!hasPlan) {
+    return (
+      <div className="bg-white rounded-md border p-6 mb-6">
+        <h3 className="font-semibold mb-2">Этап 2: План заявки</h3>
+        <p className="text-sm text-muted-foreground">
+          План заявки пока не сохранён. Запустите анализ заново, чтобы извлечь карточку закупки, состав заявки и риски.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <section className="mb-6 space-y-4">
+      <div className="flex flex-col gap-3 rounded-md border bg-white p-6 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
+            <ClipboardList className="size-4" />
+            Этап 2: План заявки
+          </div>
+          <h3 className="mt-1 text-lg font-semibold">Карточка закупки и состав подачи</h3>
+        </div>
+        <ReadinessState plan={plan} />
+        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+          <PlanCounter label="Требований" value={plan.applicationRequirements.length} />
+          <PlanCounter label="Не хватает" value={plan.missingItems.length} urgent={plan.missingItems.length > 0} />
+          <PlanCounter label="Рисков" value={plan.riskNotes.length} urgent={plan.riskNotes.length > 0} />
+        </div>
+      </div>
+
+      {plan.missingItems.length > 0 && (
+        <MissingItemsPanel items={plan.missingItems} />
+      )}
+
+      <TenderCardPanel card={plan.tenderCard} procurement={procurement} />
+
+      <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+        <ApplicationPlan requirements={plan.applicationRequirements} />
+        <RiskNotesPanel risks={plan.riskNotes} cardRisks={plan.tenderCard?.keyRisks || []} />
+      </div>
+    </section>
+  );
+}
+
+function ReadinessState({ plan }: { plan: BidPackagePlan }) {
+  const blockingMissing = plan.missingItems.filter((item) => item.blocking).length;
+  const blockingRisks = plan.riskNotes.filter((risk) => risk.severity === "blocking").length;
+  const highRisks = plan.riskNotes.filter((risk) => risk.severity === "high").length;
+  const state =
+    blockingMissing || blockingRisks
+      ? { label: "Подача заблокирована", className: "border-red-200 bg-red-50 text-red-800" }
+      : highRisks || plan.missingItems.length || plan.riskNotes.length
+        ? { label: "Готово с рисками", className: "border-amber-200 bg-amber-50 text-amber-800" }
+        : { label: "Готово к подаче", className: "border-emerald-200 bg-emerald-50 text-emerald-800" };
+
+  return (
+    <div className={`rounded-md border px-3 py-2 text-sm font-medium ${state.className}`}>
+      {state.label}
+    </div>
+  );
+}
+
+function PlanCounter({
+  label,
+  value,
+  urgent = false,
+}: {
+  label: string;
+  value: number;
+  urgent?: boolean;
+}) {
+  return (
+    <div className={`rounded-md border px-3 py-2 ${urgent ? "border-amber-200 bg-amber-50" : "bg-slate-50"}`}>
+      <div className="text-base font-semibold tabular-nums">{value}</div>
+      <div className="text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+function TenderCardPanel({
+  card,
+  procurement,
+}: {
+  card: TenderCardPlan | null;
+  procurement: {
+    number: string;
+    name: string;
+    nmck: number;
+    deliveryDeadline: string;
+  };
+}) {
+  const values = [
+    ["Заказчик", card?.customerName],
+    ["№ закупки", card?.procurementNumber || procurement.number],
+    ["Предмет", card?.subject || procurement.name],
+    ["Режим", formatLawRegime(card?.lawRegime)],
+    ["Срок подачи", formatDeadline(card?.submissionDeadline, card?.submissionDeadlineTimezone)],
+    ["НМЦК", formatMoney(card?.nmck ?? procurement.nmck)],
+    ["Оплата", card?.paymentTerms],
+    ["Поставка/работы", card?.deliveryPeriod || procurement.deliveryDeadline],
+    ["Обеспечение заявки", card?.applicationSecurity],
+    ["Обеспечение договора", card?.contractSecurity],
+    ["СМП/МСП", card?.smpSmeFlag],
+    ["Валюта", card?.currency],
+  ].filter(([, value]) => Boolean(value));
+
+  return (
+    <div className="rounded-md border bg-white p-6">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <FileText className="size-4 text-slate-500" />
+          <h4 className="font-semibold">Карточка закупки</h4>
+        </div>
+        {card?.platformUrl && (
+          <a
+            href={card.platformUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-blue-700 hover:text-blue-800"
+          >
+            {card.platformName || "Площадка"}
+            <ExternalLink className="size-3.5" />
+          </a>
+        )}
+      </div>
+
+      <dl className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {values.map(([label, value]) => (
+          <div key={label} className="rounded-md bg-slate-50 px-3 py-2">
+            <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
+            <dd className="mt-1 text-sm font-medium text-slate-900">{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {card?.evaluationCriteria && card.evaluationCriteria.length > 0 && (
+        <div className="mt-4">
+          <p className="text-sm font-medium">Критерии оценки</p>
+          <ul className="mt-2 grid gap-2 text-sm text-slate-700 md:grid-cols-2">
+            {card.evaluationCriteria.map((criterion, index) => (
+              <li key={`${criterion}-${index}`} className="rounded-md border bg-white px-3 py-2">
+                {criterion}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {card?.lots && card.lots.length > 0 && (
+        <div className="mt-4">
+          <p className="text-sm font-medium">Лоты</p>
+          <div className="mt-2 divide-y rounded-md border text-sm">
+            {card.lots.map((lot, index) => (
+              <div key={`${lot.number}-${index}`} className="grid gap-1 p-3 md:grid-cols-[80px_1fr_140px]">
+                <span className="text-slate-500">{lot.number || `Лот ${index + 1}`}</span>
+                <span>{lot.name}</span>
+                <span className="font-medium">{formatMoney(lot.nmck)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MissingItemsPanel({ items }: { items: MissingItemPlan[] }) {
+  return (
+    <div className="rounded-md border border-red-200 bg-red-50 p-5">
+      <div className="mb-3 flex items-center gap-2 text-red-800">
+        <AlertTriangle className="size-4" />
+        <h4 className="font-semibold">Не хватает перед подачей</h4>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {items.map((item, index) => (
+          <div key={`${item.title}-${index}`} className="rounded-md border border-red-100 bg-white p-3">
+            <div className="mb-1 flex items-start justify-between gap-3">
+              <p className="text-sm font-medium text-red-950">{item.title}</p>
+              {item.blocking && (
+                <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                  Блокер
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-red-800">{item.reason}</p>
+            <SourceReferences references={item.sourceReferences} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ApplicationPlan({ requirements }: { requirements: ApplicationRequirementPlan[] }) {
+  const grouped = SECTION_ORDER.map((section) => ({
+    section,
+    items: requirements.filter((item) => item.section === section),
+  }));
+
+  return (
+    <div className="rounded-md border bg-white p-6">
+      <div className="mb-4 flex items-center gap-2">
+        <ClipboardList className="size-4 text-slate-500" />
+        <h4 className="font-semibold">Состав заявки</h4>
+      </div>
+      <div className="space-y-4">
+        {grouped.map(({ section, items }) => (
+          <div key={section} className="rounded-md border">
+            <div className="flex items-center justify-between gap-3 border-b bg-slate-50 px-4 py-3">
+              <p className="text-sm font-semibold">{SECTION_LABELS[section]}</p>
+              <span className="text-xs text-muted-foreground">{items.length}</span>
+            </div>
+            {items.length === 0 ? (
+              <p className="px-4 py-3 text-sm text-muted-foreground">Требования не найдены.</p>
+            ) : (
+              <div className="divide-y">
+                {items.map((item, index) => (
+                  <RequirementRow key={`${item.requiredDocumentName}-${index}`} item={item} />
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RequirementRow({ item }: { item: ApplicationRequirementPlan }) {
+  return (
+    <div className="px-4 py-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-medium">
+            {item.requiredDocumentName || "Требование заявки"}
+          </p>
+          <p className="mt-1 text-sm text-slate-600">{item.requirementText}</p>
+        </div>
+        <StatusChip status={item.status} />
+      </div>
+      {item.riskNote && (
+        <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {item.riskNote}
+        </p>
+      )}
+      <SourceReferences references={item.sourceReferences} />
+    </div>
+  );
+}
+
+function RiskNotesPanel({
+  risks,
+  cardRisks,
+}: {
+  risks: RiskNotePlan[];
+  cardRisks: string[];
+}) {
+  return (
+    <div className="rounded-md border bg-white p-6">
+      <div className="mb-4 flex items-center gap-2">
+        <ShieldAlert className="size-4 text-slate-500" />
+        <h4 className="font-semibold">Риски и проверки</h4>
+      </div>
+      {risks.length === 0 && cardRisks.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Явные риски не извлечены.</p>
+      ) : (
+        <div className="space-y-3">
+          {risks.map((risk, index) => (
+            <div key={`${risk.text}-${index}`} className="rounded-md border p-3">
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${SEVERITY_STYLES[risk.severity]}`}>
+                  {SEVERITY_LABELS[risk.severity]}
+                </span>
+                <span className="text-xs text-muted-foreground">{SECTION_LABELS[risk.section]}</span>
+              </div>
+              <p className="text-sm font-medium">{risk.text}</p>
+              {risk.mitigation && (
+                <p className="mt-1 text-sm text-slate-600">{risk.mitigation}</p>
+              )}
+              <SourceReferences references={risk.sourceReferences} />
+            </div>
+          ))}
+          {cardRisks.map((risk, index) => (
+            <div key={`${risk}-${index}`} className="rounded-md border bg-slate-50 p-3 text-sm text-slate-700">
+              {risk}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusChip({ status }: { status: RequirementStatus }) {
+  const Icon =
+    status === "prepared"
+      ? CheckCircle2
+      : status === "risk" || status === "missing"
+        ? AlertTriangle
+        : CircleDashed;
+
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[status]}`}>
+      <Icon className="size-3" />
+      {STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+function SourceReferences({ references }: { references: SourceReference[] }) {
+  if (!references.length) return null;
+
+  return (
+    <details className="mt-2 text-xs text-muted-foreground">
+      <summary className="cursor-pointer select-none">Источники ({references.length})</summary>
+      <div className="mt-2 space-y-2">
+        {references.map((reference, index) => (
+          <div key={`${reference.sourceFile}-${index}`} className="rounded-md bg-slate-50 px-3 py-2">
+            <p className="font-medium text-slate-700">
+              {reference.sourceFile}
+              {formatReferenceLocation(reference)}
+            </p>
+            {reference.textQuote && (
+              <p className="mt-1 text-slate-600">{reference.textQuote}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function formatReferenceLocation(reference: SourceReference) {
+  if (reference.locationType === "block_range" && reference.startBlock) {
+    return `, блоки ${reference.startBlock}${reference.endBlock ? `-${reference.endBlock}` : ""}`;
+  }
+  if (reference.locationType === "page" && reference.page) return `, стр. ${reference.page}`;
+  if (reference.locationType === "sheet" && reference.sheetName) return `, лист ${reference.sheetName}`;
+  if (reference.locationType === "row" && reference.row) return `, строка ${reference.row}`;
+  return "";
+}
+
+function formatMoney(value: number | null | undefined) {
+  if (!value || value <= 0) return "";
+  return `${value.toLocaleString("ru-RU")} ₽`;
+}
+
+function formatDeadline(deadline: string | undefined, timezone: string | undefined) {
+  if (!deadline) return "";
+  return timezone ? `${deadline} ${timezone}` : deadline;
+}
+
+function formatLawRegime(value: TenderCardPlan["lawRegime"] | undefined) {
+  if (!value || value === "unknown") return "";
+  return value;
+}
+
 // --- Confidence Report Component ---
 
 function ConfidenceReportCard({ url }: { url: string | null }) {
-  const [report, setReport] = useState<any[] | null>(null);
+  const [report, setReport] = useState<ConfidenceFormReport[] | null>(null);
   const [loading, setLoading] = useState(false);
 
   const loadReport = useCallback(async () => {
@@ -405,7 +966,7 @@ function ConfidenceReportCard({ url }: { url: string | null }) {
     try {
       const res = await fetch(url);
       const data = await res.json();
-      setReport(data);
+      setReport(Array.isArray(data) ? data as ConfidenceFormReport[] : []);
     } finally {
       setLoading(false);
     }
@@ -426,10 +987,10 @@ function ConfidenceReportCard({ url }: { url: string | null }) {
         </button>
       )}
       {report &&
-        report.map((formReport: any, idx: number) => (
+        report.map((formReport, idx) => (
           <div key={idx} className="mb-4 last:mb-0">
             <p className="text-sm font-medium">{formReport.formName}</p>
-            {formReport.fields?.map((field: any, fi: number) => (
+            {formReport.fields?.map((field, fi) => (
               <div key={fi} className="flex items-center gap-2 text-xs mt-1">
                 <span
                   className={`w-2 h-2 rounded-full ${
@@ -447,11 +1008,12 @@ function ConfidenceReportCard({ url }: { url: string | null }) {
                 )}
               </div>
             ))}
-            {formReport.warnings?.length > 0 && (
+            {(formReport.warnings?.length ?? 0) > 0 && (
               <div className="mt-2">
-                {formReport.warnings.map((w: string, wi: number) => (
-                  <p key={wi} className="text-xs text-orange-600">
-                    &#9888;&#65039; {w}
+                {formReport.warnings?.map((w, wi) => (
+                  <p key={wi} className="flex items-center gap-1 text-xs text-orange-600">
+                    <AlertTriangle className="size-3" />
+                    {w}
                   </p>
                 ))}
               </div>

@@ -32,7 +32,8 @@ export const applyFillInstructions = internalAction({
       const form = forms.find((f) => f._id === formId);
       if (!form || !form.url) continue;
 
-      const instructions = extractJson(instructionsJson);
+      const parsedInstructions = extractJson(instructionsJson);
+      const instructions = Array.isArray(parsedInstructions) ? parsedInstructions : [];
       const response = await fetch(form.url);
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);

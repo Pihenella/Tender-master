@@ -15,11 +15,14 @@ export interface ComputedField {
   label: string;
 }
 
-export interface ClaudeMapping {
+export interface AiMapping {
   mappings: MappingEntry[];
   tables: Array<{
     dataStartRow: number;
-    columnMap: Record<string, string>;
+    columns: Array<{
+      column: string;
+      dataPath: string;
+    }>;
   }>;
   unmapped: string[];
   computed: ComputedField[];
@@ -127,7 +130,7 @@ function masterCell(merges: string[], cellAddr: string): string {
 // ─── resolveMapping ──────────────────────────────────────────────────
 
 export function resolveMapping(
-  mapping: ClaudeMapping,
+  mapping: AiMapping,
   context: any
 ): ResolveResult {
   const cellValues: CellValue[] = [];
@@ -152,7 +155,7 @@ export function resolveMapping(
   // Process tables
   const tableData: ResolveResult["tableData"] = [];
   for (const table of mapping.tables) {
-    const columns = Object.entries(table.columnMap);
+    const columns = table.columns.map((entry) => [entry.column, entry.dataPath] as const);
     if (columns.length === 0) continue;
 
     // Resolve all column arrays

@@ -1,37 +1,63 @@
 "use node";
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const MODEL = "claude-sonnet-4-20250514";
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+const MODEL = process.env.OPENAI_MODEL || "gpt-5.5";
+const REASONING_EFFORT = process.env.OPENAI_REASONING_EFFORT || "xhigh";
 
-export async function callOpus(
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function extractOutputText(response: unknown): string {
+  if (!isRecord(response)) return "";
+  if (typeof response.output_text === "string") return response.output_text.trim();
+
+  const parts: string[] = [];
+  const outputs = Array.isArray(response.output) ? response.output : [];
+  for (const output of outputs) {
+    if (!isRecord(output)) continue;
+    if (output.type !== "message") continue;
+    const contentItems = Array.isArray(output.content) ? output.content : [];
+    for (const content of contentItems) {
+      if (!isRecord(content)) continue;
+      if (content.type === "refusal") {
+        throw new Error(`OpenAI refusal: ${String(content.refusal || "request refused")}`);
+      }
+      if (typeof content.text === "string") parts.push(content.text);
+      if (typeof content.output_text === "string") parts.push(content.output_text);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+export async function callOpenAIModel(
   systemPrompt: string,
   userMessage: string,
   maxTokens = 16384,
   maxRetries = 3
 ): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const res = await fetch(ANTHROPIC_API_URL, {
+    const res = await fetch(`${OPENAI_BASE_URL}/responses`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: MODEL,
-        system: systemPrompt,
-        messages: [
+        reasoning: { effort: REASONING_EFFORT },
+        max_output_tokens: maxTokens,
+        input: [
+          { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
-        max_tokens: maxTokens,
-        temperature: 0.1,
       }),
     });
 
-    if (res.status === 429 || res.status === 529) {
+    if ([408, 409, 429, 500, 502, 503, 504].includes(res.status)) {
       const waitMs = 30000 * (attempt + 1);
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
@@ -39,15 +65,19 @@ export async function callOpus(
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Anthropic API ${res.status}: ${errText}`);
+      throw new Error(`OpenAI API ${res.status}: ${errText}`);
     }
 
     const data = await res.json();
-    const content = data.content?.[0]?.text || "";
-    if (!content) throw new Error("Empty response from Claude");
+    if (isRecord(data) && data.status === "incomplete") {
+      const details = isRecord(data.incomplete_details) ? data.incomplete_details : {};
+      throw new Error(`OpenAI response incomplete: ${String(details.reason || "unknown reason")}`);
+    }
+    const content = extractOutputText(data);
+    if (!content) throw new Error("Empty response from OpenAI");
     return content;
   }
-  throw new Error("Anthropic API: max retries exceeded");
+  throw new Error("OpenAI API: max retries exceeded");
 }
 
 function repairTruncatedJson(text: string): string {
@@ -78,7 +108,7 @@ function sanitizeJsonString(text: string): string {
   );
 }
 
-export function extractJson(text: string): any {
+export function extractJson(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {

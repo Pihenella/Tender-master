@@ -52,6 +52,41 @@ export interface CompanyProfile {
   }>;
 }
 
+export interface ParticipantProfile {
+  id: string;
+  type: "ip" | "ooo" | "ao" | "other";
+  fullName: string;
+  shortName: string;
+  inn: string;
+  kpp: string;
+  ogrn: string;
+  legalAddress: string;
+  actualAddress: string;
+  mailingAddress: string;
+  signatory: {
+    fio: string;
+    fioShort: string;
+    position: string;
+    authorityBasis: string;
+    phone: string;
+    email: string;
+  };
+  bank: CompanyProfile["bank"];
+  tax: {
+    system: string;
+    vatStatus: string;
+    ndsRate: number;
+    ndsLabel: string;
+  };
+  identifiers: string[];
+  sourceDocuments: Array<{
+    type: string;
+    title: string;
+    freshnessDate: string;
+    available: boolean;
+  }>;
+}
+
 export const profiles: Record<string, CompanyProfile> = {
   boltinov: {
     id: "boltinov",
@@ -63,9 +98,9 @@ export const profiles: Record<string, CompanyProfile> = {
     kpp: "",
     oktmo: "94701000001",
     okved: "47.91",
-    legalAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
-    mailingAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
-    actualAddress: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
+    legalAddress: "426068 Республика Удмуртская г. Ижевск улица имени Сабурова А.Н. дом 47 кв. 34.",
+    mailingAddress: "426068 Республика Удмуртская г. Ижевск улица имени Сабурова А.Н. дом 47 кв. 34.",
+    actualAddress: "426068 Республика Удмуртская г. Ижевск улица имени Сабурова А.Н. дом 47 кв. 34.",
     bank: {
       name: "ООО \"Банк Точка\"",
       bic: "044525104",
@@ -78,7 +113,7 @@ export const profiles: Record<string, CompanyProfile> = {
       fioShort: "Болтинов Д.А.",
       position: "Индивидуальный предприниматель",
       phone: "+79193876713",
-      email: "boltinov99@mail.ru",
+      email: "Boltinov99@mail.ru",
     },
     passport: {
       series: "6519",
@@ -103,7 +138,7 @@ export const profiles: Record<string, CompanyProfile> = {
         ogrn: "324665800041636",
         role: "руководитель",
         share: "100%",
-        address: "Республика Удмуртская город Ижевск ул., имени Сабурова А.Н. дом 47 кв. 34.",
+        address: "426068 Республика Удмуртская г. Ижевск улица имени Сабурова А.Н. дом 47 кв. 34.",
         passport: "6519 880947",
       },
     ],
@@ -167,4 +202,68 @@ export const profiles: Record<string, CompanyProfile> = {
 
 export function getProfile(id: "boltinov" | "pikhenek"): CompanyProfile {
   return profiles[id];
+}
+
+function uniqueNonEmpty(values: Array<string | undefined | null>) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
+export function adaptParticipantProfile(profile: CompanyProfile): ParticipantProfile {
+  const isIp = profile.fullName.toLowerCase().includes("индивидуальный предприниматель");
+  const passport = `${profile.passport.series} ${profile.passport.number}`.trim();
+
+  return {
+    id: profile.id,
+    type: isIp ? "ip" : "other",
+    fullName: profile.fullName,
+    shortName: profile.shortName,
+    inn: profile.inn,
+    kpp: profile.kpp || "нет",
+    ogrn: profile.ogrn,
+    legalAddress: profile.legalAddress,
+    actualAddress: profile.actualAddress,
+    mailingAddress: profile.mailingAddress,
+    signatory: {
+      fio: profile.director.fio,
+      fioShort: profile.director.fioShort,
+      position: profile.director.position,
+      authorityBasis: isIp ? "действует как индивидуальный предприниматель" : "на основании учредительных документов",
+      phone: profile.director.phone,
+      email: profile.director.email,
+    },
+    bank: profile.bank,
+    tax: {
+      system: profile.tax.system,
+      vatStatus: profile.tax.ndsLabel,
+      ndsRate: profile.tax.ndsRate,
+      ndsLabel: profile.tax.ndsLabel,
+    },
+    identifiers: uniqueNonEmpty([
+      profile.fullName,
+      profile.shortName,
+      profile.inn,
+      profile.ogrn,
+      profile.legalAddress,
+      profile.actualAddress,
+      profile.director.fio,
+      profile.director.fioShort,
+      profile.director.phone,
+      profile.director.email,
+      profile.bank.name,
+      profile.bank.bic,
+      profile.bank.account,
+      profile.bank.corrAccount,
+      passport,
+    ]),
+    sourceDocuments: [
+      { type: "registration", title: "Выписка ЕГРИП/ЕГРЮЛ", freshnessDate: "", available: false },
+      { type: "passport", title: "Паспортные данные подписанта", freshnessDate: profile.passport.issueDate, available: Boolean(passport) },
+      { type: "tax", title: "Подтверждение налогового режима", freshnessDate: "", available: false },
+      { type: "authority", title: "Основание полномочий подписанта", freshnessDate: profile.registration.ogrnDate, available: true },
+    ],
+  };
+}
+
+export function getParticipantProfile(id: "boltinov" | "pikhenek"): ParticipantProfile {
+  return adaptParticipantProfile(getProfile(id));
 }

@@ -67,6 +67,7 @@ export const parseCalculation = action({
         procurementId: args.procurementId,
         itemIndex,
         itemName: existing.itemName,
+        unit: existing.unit,
         pp1875: existing.pp1875,
         quantity: existing.quantity,
         nmckPrice: existing.nmckPrice,

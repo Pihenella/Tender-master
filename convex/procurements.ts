@@ -1,6 +1,13 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 
+const packagePlanTables = [
+  "tenderCards",
+  "applicationRequirements",
+  "missingItems",
+  "riskNotes",
+] as const;
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -122,7 +129,44 @@ export const remove = mutation({
       await ctx.db.delete(gf._id);
     }
 
+    for (const table of packagePlanTables) {
+      const rows = await ctx.db
+        .query(table)
+        .withIndex("by_procurement", (q) => q.eq("procurementId", args.id))
+        .collect();
+      for (const row of rows) await ctx.db.delete(row._id);
+    }
+
     await ctx.db.delete(args.id);
+  },
+});
+
+export const getBidPackagePlan = query({
+  args: { procurementId: v.id("procurements") },
+  handler: async (ctx, args) => {
+    const tenderCards = await ctx.db
+      .query("tenderCards")
+      .withIndex("by_procurement", (q) => q.eq("procurementId", args.procurementId))
+      .collect();
+    const applicationRequirements = await ctx.db
+      .query("applicationRequirements")
+      .withIndex("by_procurement", (q) => q.eq("procurementId", args.procurementId))
+      .collect();
+    const missingItems = await ctx.db
+      .query("missingItems")
+      .withIndex("by_procurement", (q) => q.eq("procurementId", args.procurementId))
+      .collect();
+    const riskNotes = await ctx.db
+      .query("riskNotes")
+      .withIndex("by_procurement", (q) => q.eq("procurementId", args.procurementId))
+      .collect();
+
+    return {
+      tenderCard: tenderCards[0] ?? null,
+      applicationRequirements: applicationRequirements.sort((a, b) => a.sortOrder - b.sortOrder),
+      missingItems: missingItems.sort((a, b) => a.sortOrder - b.sortOrder),
+      riskNotes: riskNotes.sort((a, b) => a.sortOrder - b.sortOrder),
+    };
   },
 });
 

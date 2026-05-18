@@ -109,8 +109,12 @@ export const exportPackageToDrive = action({
     procurementId: v.id("procurements"),
   },
   handler: async (ctx, args): Promise<DriveExportResult> => {
-    const rootFolderId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
-    if (!rootFolderId) throw new Error("GOOGLE_DRIVE_ROOT_FOLDER_ID not set");
+    const outputFolderId =
+      process.env.GOOGLE_DRIVE_OUTPUT_FOLDER_ID ||
+      process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+    if (!outputFolderId) {
+      throw new Error("GOOGLE_DRIVE_OUTPUT_FOLDER_ID not set");
+    }
 
     const procurement = (await ctx.runQuery(api.procurements.get, {
       id: args.procurementId,
@@ -119,7 +123,7 @@ export const exportPackageToDrive = action({
 
     const folderId = await findOrCreateFolder(
       procurementFolderName(procurement),
-      rootFolderId
+      outputFolderId
     );
 
     const sourceFiles = await ctx.runQuery(api.files.listByProcurement, {

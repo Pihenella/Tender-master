@@ -57,8 +57,10 @@ export const listConfiguredRoot = action({
     maxDepth: v.optional(v.number()),
   },
   handler: async (_ctx, args): Promise<DriveLibraryEntry[]> => {
-    const folderId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
-    if (!folderId) throw new Error("GOOGLE_DRIVE_ROOT_FOLDER_ID not set");
+    const folderId =
+      process.env.GOOGLE_DRIVE_LIBRARY_FOLDER_ID ||
+      process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+    if (!folderId) throw new Error("GOOGLE_DRIVE_LIBRARY_FOLDER_ID not set");
 
     const entries: DriveLibraryEntry[] = [];
     await listTree(

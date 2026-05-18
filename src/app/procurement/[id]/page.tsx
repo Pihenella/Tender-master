@@ -371,23 +371,15 @@ export default function ProcurementPage({
           <div className="bg-white rounded-lg border p-6 mb-6">
             <h3 className="font-semibold mb-4">Этап 3: Калькуляция</h3>
 
-            {calculationFile && calculationFile.url && (
-              <div className="mb-4">
-                <button
-                  onClick={async () => {
-                    const res = await fetch(calculationFile.url!);
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = calculationFile.fileName;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  }}
-                  className="inline-flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700"
-                >
-                  &#128229; Скачать калькуляцию
-                </button>
+            {calculationFile && (
+              <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="size-4" />
+                  <span className="font-medium">Калькуляция создана</span>
+                </div>
+                <p className="mt-1 text-emerald-700">
+                  Файл лежит в рабочей папке заявки: price_offer/{calculationFile.fileName}
+                </p>
               </div>
             )}
 
@@ -400,6 +392,17 @@ export default function ProcurementPage({
               label={hasCalculation ? "Перезагрузить калькуляцию (.xlsx)" : "Загрузите заполненную калькуляцию (.xlsx)"}
               accept=".xlsx"
               onUploadComplete={handleCalculationUpload}
+            />
+          </div>
+        )}
+
+        {isAnalyzed && generatedFiles && generatedFiles.length > 0 && (
+          <div className="mb-6">
+            <GeneratedFilesList
+              procurementId={procurementId}
+              files={generatedFiles}
+              sourceFiles={uploadedFiles || []}
+              driveFolderId={procurement.driveFolderId}
             />
           </div>
         )}
@@ -505,12 +508,9 @@ export default function ProcurementPage({
             )}
 
             {filledForms && filledForms.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-sm font-medium mb-2">
-                  Файлы пакета:
-                </h4>
-                <GeneratedFilesList files={filledForms} sourceFiles={uploadedFiles || []} />
-              </div>
+              <p className="mt-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                Заполненные формы добавлены в рабочую папку заявки.
+              </p>
             )}
 
             {confidenceReport && (

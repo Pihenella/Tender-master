@@ -1,7 +1,26 @@
 import { v } from "convex/values";
 import { query, mutation, action } from "./_generated/server";
-import { api, internal } from "./_generated/api";
-import { createFolder, uploadFile } from "./googleDrive";
+import { api } from "./_generated/api";
+import { findOrCreateFolder, uploadFile } from "./googleDrive";
+
+function safeDriveFolderName(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function procurementFolderName(procurement: {
+  number?: string;
+  name?: string;
+  _id: string;
+}) {
+  const parts = [procurement.number, procurement.name]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  return safeDriveFolderName(parts.join(" - ")) || `Закупка ${procurement._id.slice(-6)}`;
+}
 
 export const generateUploadUrl = mutation({
   args: {},
@@ -170,11 +189,8 @@ export const uploadToDrive = action({
 
     let folderId = procurement.driveFolderId;
     if (!folderId) {
-      const folderName =
-        procurement.name && procurement.name !== "Новая закупка"
-          ? procurement.name
-          : `Закупка_${args.procurementId.slice(-6)}`;
-      folderId = await createFolder(folderName, rootFolderId);
+      const folderName = procurementFolderName(procurement);
+      folderId = await findOrCreateFolder(folderName, rootFolderId);
       await ctx.runMutation(api.files.updateDriveFolderId, {
         procurementId: args.procurementId,
         driveFolderId: folderId,

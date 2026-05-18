@@ -23,6 +23,7 @@ import type * as http from "../http.js";
 import type * as localApi from "../localApi.js";
 import type * as logistics from "../logistics.js";
 import type * as opusApi from "../opusApi.js";
+import type * as packageExport from "../packageExport.js";
 import type * as procurements from "../procurements.js";
 
 import type {
@@ -47,6 +48,7 @@ declare const fullApi: ApiFromModules<{
   localApi: typeof localApi;
   logistics: typeof logistics;
   opusApi: typeof opusApi;
+  packageExport: typeof packageExport;
   procurements: typeof procurements;
 }>;
 

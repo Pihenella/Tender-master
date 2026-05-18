@@ -117,17 +117,10 @@ export const exportPackageToDrive = action({
     })) as ProcurementForDrive | null;
     if (!procurement) throw new Error("Procurement not found");
 
-    let folderId: string | undefined = procurement.driveFolderId;
-    if (!folderId) {
-      folderId = await findOrCreateFolder(
-        procurementFolderName(procurement),
-        rootFolderId
-      );
-      await ctx.runMutation(api.files.updateDriveFolderId, {
-        procurementId: args.procurementId,
-        driveFolderId: folderId,
-      });
-    }
+    const folderId = await findOrCreateFolder(
+      procurementFolderName(procurement),
+      rootFolderId
+    );
 
     const sourceFiles = await ctx.runQuery(api.files.listByProcurement, {
       procurementId: args.procurementId,
@@ -183,6 +176,13 @@ export const exportPackageToDrive = action({
         fileName: file.fileName,
         folder,
         driveFileId,
+      });
+    }
+
+    if (procurement.driveFolderId !== folderId) {
+      await ctx.runMutation(api.files.updateDriveFolderId, {
+        procurementId: args.procurementId,
+        driveFolderId: folderId,
       });
     }
 
